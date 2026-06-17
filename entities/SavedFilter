@@ -1,0 +1,14 @@
+{
+  "name": "SavedFilter",
+  "table": "saved_filters",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string" },
+    "user_id": { "type": "string" },
+    "name": { "type": "string" },
+    "source": { "type": "string" },
+    "filters": { "type": "object" },
+    "created_at": { "type": "string" }
+  },
+  "required": ["user_id", "name", "filters"]
+}

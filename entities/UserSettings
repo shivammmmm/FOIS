@@ -1,0 +1,46 @@
+{
+  "name": "UserSettings",
+  "type": "object",
+  "properties": {
+    "user_email": {
+      "type": "string"
+    },
+    "notify_arrival": {
+      "type": "boolean",
+      "default": true
+    },
+    "notify_departure": {
+      "type": "boolean",
+      "default": true
+    },
+    "notify_delay": {
+      "type": "boolean",
+      "default": true
+    },
+    "notify_missing_odr": {
+      "type": "boolean",
+      "default": true
+    },
+    "notify_duplicate_odr": {
+      "type": "boolean",
+      "default": true
+    },
+    "notify_inward": {
+      "type": "boolean",
+      "default": true
+    },
+    "notify_outward": {
+      "type": "boolean",
+      "default": false
+    },
+    "home_station": {
+      "type": "string"
+    },
+    "home_division": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "user_email"
+  ]
+}

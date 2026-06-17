@@ -1,0 +1,52 @@
+{
+  "name": "MaturedIndent",
+  "type": "object",
+  "properties": {
+    "indent_number": {
+      "type": "string"
+    },
+    "zone": {
+      "type": "string"
+    },
+    "division": {
+      "type": "string"
+    },
+    "station_from": {
+      "type": "string"
+    },
+    "station_to": {
+      "type": "string"
+    },
+    "commodity": {
+      "type": "string"
+    },
+    "rake_type": {
+      "type": "string"
+    },
+    "wagons_demanded": {
+      "type": "number"
+    },
+    "indent_date": {
+      "type": "string"
+    },
+    "maturity_date": {
+      "type": "string"
+    },
+    "odr_matched": {
+      "type": "boolean",
+      "default": false
+    },
+    "matched_odr_number": {
+      "type": "string"
+    },
+    "upload_batch_id": {
+      "type": "string"
+    },
+    "raw_data": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "indent_number"
+  ]
+}

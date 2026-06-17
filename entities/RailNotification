@@ -1,0 +1,52 @@
+{
+  "name": "RailNotification",
+  "type": "object",
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": [
+        "MissingODR",
+        "DuplicateODR",
+        "Arrival",
+        "Departure",
+        "Delay",
+        "Inward",
+        "Outward",
+        "System"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "severity": {
+      "type": "string",
+      "enum": [
+        "info",
+        "warning",
+        "error"
+      ],
+      "default": "info"
+    },
+    "is_read": {
+      "type": "boolean",
+      "default": false
+    },
+    "related_odr": {
+      "type": "string"
+    },
+    "related_division": {
+      "type": "string"
+    },
+    "batch_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "title",
+    "message"
+  ]
+}

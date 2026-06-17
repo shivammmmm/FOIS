@@ -1,0 +1,70 @@
+{
+  "name": "FreightMovement",
+  "type": "object",
+  "properties": {
+    "odr_number": {
+      "type": "string",
+      "description": "ODR number from FOIS"
+    },
+    "zone": {
+      "type": "string"
+    },
+    "division": {
+      "type": "string"
+    },
+    "station_from": {
+      "type": "string"
+    },
+    "station_to": {
+      "type": "string"
+    },
+    "commodity": {
+      "type": "string"
+    },
+    "rake_type": {
+      "type": "string"
+    },
+    "wagons": {
+      "type": "number"
+    },
+    "arrival_date": {
+      "type": "string"
+    },
+    "departure_date": {
+      "type": "string"
+    },
+    "movement_type": {
+      "type": "string",
+      "enum": [
+        "Inward",
+        "Outward",
+        "Unknown"
+      ],
+      "default": "Unknown"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "Pending",
+        "In Transit",
+        "Arrived",
+        "Departed",
+        "Delayed"
+      ],
+      "default": "Pending"
+    },
+    "upload_batch_id": {
+      "type": "string"
+    },
+    "is_duplicate": {
+      "type": "boolean",
+      "default": false
+    },
+    "raw_data": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "odr_number"
+  ]
+}

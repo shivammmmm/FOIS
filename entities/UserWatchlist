@@ -1,0 +1,13 @@
+{
+  "name": "UserWatchlist",
+  "table": "user_watchlist",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string" },
+    "user_id": { "type": "string" },
+    "station_code": { "type": "string" },
+    "station_name": { "type": "string" },
+    "created_at": { "type": "string" }
+  },
+  "required": ["user_id", "station_code", "station_name"]
+}

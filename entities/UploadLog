@@ -1,0 +1,61 @@
+{
+  "name": "UploadLog",
+  "type": "object",
+  "properties": {
+    "batch_id": {
+      "type": "string"
+    },
+    "file_name": {
+      "type": "string"
+    },
+    "file_type": {
+      "type": "string",
+      "enum": [
+        "ODR",
+        "MaturedIndent"
+      ]
+    },
+    "uploaded_by": {
+      "type": "string"
+    },
+    "records_parsed": {
+      "type": "number",
+      "default": 0
+    },
+    "records_valid": {
+      "type": "number",
+      "default": 0
+    },
+    "records_failed": {
+      "type": "number",
+      "default": 0
+    },
+    "duplicates_found": {
+      "type": "number",
+      "default": 0
+    },
+    "missing_odrs_found": {
+      "type": "number",
+      "default": 0
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "Success",
+        "Failed",
+        "Partial"
+      ],
+      "default": "Success"
+    },
+    "error_details": {
+      "type": "string"
+    },
+    "upload_time": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "batch_id",
+    "file_name"
+  ]
+}
