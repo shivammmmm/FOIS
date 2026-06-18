@@ -30,3 +30,7 @@ server/data/*.json
 
 .env
 .vite
+dist/
+dist.zip
+node_modules/
+.env

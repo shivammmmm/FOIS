@@ -469,28 +469,21 @@ export default function FreightTracker() {
 }
 
 function MovementTable({ title, records, type, onSelect }) {
-  const firstStationLabel = type === "Inward" ? "Dest. Stn" : "Source Stn";
-  const oppositeStationLabel = type === "Inward" ? "Source Stn" : "Dest. Stn";
-  const districtLabel = type === "Inward" ? "Dist.(To)" : "Dist.(Source)";
-  const stateLabel = type === "Inward" ? "State (To)" : "State (Source)";
-
   return (
     <table className="w-full table-fixed text-xs border-collapse">
       <thead>
         <tr>
           {[
-            title,
-            firstStationLabel,
-            districtLabel,
-            stateLabel,
-            "Company",
-            "Product",
+            "Movement",
+            "Source Station",
+            "Destination Station",
+            "State",
+            "District",
+            "Commodity (CMDT)",
             "Rake CMDT",
             "Wagons",
-            oppositeStationLabel,
             "Departure Date",
-            "Arrival Date & Time",
-            "FNR",
+            "Arrival Date",
           ].map((h, index) => (
             <th
               key={`${type}-${h}`}
@@ -509,17 +502,13 @@ function MovementTable({ title, records, type, onSelect }) {
           <th className="border border-slate-300 bg-white px-2 py-2 text-center font-normal text-slate-700">
             Station Name (Station Code)
           </th>
-          <th className="border border-slate-300 bg-white px-2 py-2" />
-          <th className="border border-slate-300 bg-white px-2 py-2" />
-          <th className="border border-slate-300 bg-white px-2 py-2" />
-          <th className="border border-slate-300 bg-white px-2 py-2" />
-          <th className="border border-slate-300 bg-white px-2 py-2 text-center font-normal text-slate-700">
-            2
-          </th>
-          <th className="border border-slate-300 bg-white px-2 py-2" />
           <th className="border border-slate-300 bg-white px-2 py-2 text-center font-normal text-slate-700">
             Station Name (Station Code)
           </th>
+          <th className="border border-slate-300 bg-white px-2 py-2" />
+          <th className="border border-slate-300 bg-white px-2 py-2" />
+          <th className="border border-slate-300 bg-white px-2 py-2" />
+          <th className="border border-slate-300 bg-white px-2 py-2" />
           <th className="border border-slate-300 bg-white px-2 py-2" />
           <th className="border border-slate-300 bg-white px-2 py-2" />
           <th className="border border-slate-300 bg-white px-2 py-2" />
@@ -529,7 +518,7 @@ function MovementTable({ title, records, type, onSelect }) {
         {records.length === 0 ? (
           <tr>
             <td
-              colSpan={12}
+              colSpan={10}
               className="border border-slate-300 px-4 py-8 text-center text-muted-foreground"
             >
               No {type.toLowerCase()} records.
@@ -547,16 +536,10 @@ function MovementTable({ title, records, type, onSelect }) {
 
 function MovementRow({ record, type, onSelect }) {
   const divisionMeta = getDivisionMeta(record.division);
-  const primaryStation =
-    type === "Inward" ? record.station_to : record.station_from;
-  const oppositeStation =
-    type === "Inward" ? record.station_from : record.station_to;
 
   // Prefer DB-enriched full forms when available
-  const primaryName =
-    type === "Inward"
-      ? record.to_station_name || record.to_station_full_name
-      : record.from_station_name || record.from_station_full_name;
+  const fromName = record.from_station_name || record.from_station_full_name;
+  const toName = record.to_station_name || record.to_station_full_name;
 
   const primaryDistrict =
     type === "Inward" ? record.to_district : record.from_district;
@@ -573,11 +556,19 @@ function MovementRow({ record, type, onSelect }) {
       }`}
     >
       <GridCell
-        value={record.odr_number}
+        value={record.movement_type || type}
         strong
         duplicate={record.is_duplicate}
       />
-      <StationCell code={primaryStation} nameOverride={primaryName} />
+      <StationCell code={record.station_from} nameOverride={fromName} />
+      <StationCell code={record.station_to} nameOverride={toName} />
+      <GridCell
+        value={
+          readRaw(record, "State", "StateTo", "StateSource") ||
+          primaryState ||
+          divisionMeta?.state
+        }
+      />
       <GridCell
         value={
           readRaw(record, "District", "Dist", "DistrictTo", "DistrictSource") ||
@@ -587,15 +578,6 @@ function MovementRow({ record, type, onSelect }) {
       />
       <GridCell
         value={
-          readRaw(record, "State", "StateTo", "StateSource") ||
-          primaryState ||
-          divisionMeta?.state
-        }
-      />
-
-      <GridCell value={readRaw(record, "Company", "Customer", "Party")} />
-      <GridCell
-        value={
           readRaw(record, "Product") ||
           getCommodityName(record.commodity) ||
           record.commodity
@@ -603,7 +585,6 @@ function MovementRow({ record, type, onSelect }) {
       />
       <GridCell value={getRakeTypeName(record.rake_type) || record.rake_type} />
       <GridCell value={record.wagons} align="center" />
-      <StationCell code={oppositeStation} />
       <GridCell
         value={formatDateTime(record.departure_date, record.raw_data?.Time)}
       />
@@ -613,7 +594,6 @@ function MovementRow({ record, type, onSelect }) {
           record.raw_data?.UpdatedTime
         )}
       />
-      <GridCell value={readRaw(record, "FNR", "Fnr", "fnr")} />
     </tr>
   );
 }

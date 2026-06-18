@@ -1,9 +1,6 @@
 /**
  * Utility for comparing ODR data against Matured Indent data.
- * Column mapping based on actual FOIS Excel format:
- * Sr No, Zone, Code (= Division/Station), Seq, Date, Time, Arrival Date,
- * From, To, Commodity, Type, Category, Flag1, Flag2, Material (= Destination station),
- * Destination (= Wagon/Rake Type), Wagon Type (= Count per wagon type), Count1, Count2, Updated Time
+ * Column mapping based on actual FOIS Excel format.
  */
 
 export function generateBatchId() {
@@ -12,89 +9,136 @@ export function generateBatchId() {
 
 /**
  * Parse a raw Excel row (ODR file) into a FreightMovement record.
- * Accepts both old field names and actual FOIS column names.
+ * Uses normalized FOIS column names.
  */
 export function parseODRRow(row, batchId) {
-  // Support actual FOIS column names
-  const srNo = row['Sr No'] || row['sr_no'] || row['Sr No.'] || '';
-  const zone = (row['Zone'] || row['zone'] || '').toString().trim().toUpperCase();
-  const code = (row['Code'] || row['code'] || row['division'] || '').toString().trim().toUpperCase();
-  const seq = row['Seq'] || row['seq'] || '';
-  const date = row['Date'] || row['date'] || '';
-  const time = row['Time'] || row['time'] || '';
-  const arrivalDate = row['Arrival Date'] || row['arrival_date'] || '';
-  const from = (row['From'] || row['from'] || row['station_from'] || '').toString().trim().toUpperCase();
-  const to = (row['To'] || row['to'] || row['station_to'] || '').toString().trim().toUpperCase();
-  const commodity = (row['Commodity'] || row['commodity'] || '').toString().trim().toUpperCase();
-  const type = (row['Type'] || row['type'] || '').toString().trim().toUpperCase();
-  const category = (row['Category'] || row['category'] || '').toString().trim().toUpperCase();
-  const flag1 = row['Flag1'] || row['flag1'] || '';
-  const flag2 = row['Flag2'] || row['flag2'] || '';
-  const material = (row['Material'] || row['material'] || '').toString().trim().toUpperCase(); // destination station
-  const destination = (row['Destination'] || row['destination'] || '').toString().trim().toUpperCase(); // wagon/rake type
-  const wagonType = row['Wagon Type'] || row['wagon_type'] || '';
-  const count1 = row['Count1'] || row['count1'] || '';
-  const count2 = row['Count2'] || row['count2'] || '';
-  const updatedTime = row['Updated Time'] || row['updated_time'] || '';
+  const fields = getFoisFields(row);
+  if (!fields.srNo || !fields.division || !fields.indentNo) return null;
 
-  if (!srNo || !zone) return null;
-
-  const movementType = detectMovementType(category, type, flag2);
-  const status = detectStatus(arrivalDate);
+  const movementType = detectMovementType(fields.pc, fields.indentType, fields.tt);
+  const status = detectStatus(fields.expectedLoadingDate);
 
   return {
-    odr_number: String(srNo).trim(), // Sr No is the primary identifier
-    zone,
-    division: code,         // Code = Division/Station code
-    station_from: from,
-    station_to: to,
-    commodity,
-    rake_type: destination, // Destination column = Wagon/Rake type
-    wagons: parseInt(count1) || parseInt(wagonType) || 0,
-    arrival_date: normalizeDate(arrivalDate),
-    departure_date: normalizeDate(date),
+    odr_number: fields.indentNo,
+    zone: fields.division,
+    division: fields.division,
+    station_from: fields.stationFrom,
+    station_to: fields.destination,
+    commodity: fields.commodity,
+    rake_type: fields.rakeCmdt,
+    wagons: parseInt(fields.suppliedUnits, 10) || parseInt(fields.indented8w, 10) || parseInt(fields.indentedUnits, 10) || 0,
+    arrival_date: normalizeDate(fields.expectedLoadingDate),
+    departure_date: normalizeDate(fields.indentDate),
     movement_type: movementType,
     status,
     upload_batch_id: batchId,
     is_duplicate: false,
-    raw_data: { Seq: seq, Type: type, Category: category, Flag1: flag1, Flag2: flag2, Material: material, Count2: count2, UpdatedTime: updatedTime, Time: time }
+    raw_data: buildFoisRawData(fields)
   };
 }
 
 /**
  * Parse a raw Excel row (Matured Indent file) into a MaturedIndent record.
- * Same column structure as ODR file.
+ * Uses Matured Indent-specific FOIS column names.
  */
 export function parseIndentRow(row, batchId) {
-  const srNo = row['Sr No'] || row['Sr No.'] || row['sr_no'] || '';
-  const zone = (row['Zone'] || row['zone'] || '').toString().trim().toUpperCase();
-  const code = (row['Code'] || row['code'] || '').toString().trim().toUpperCase();
-  const seq = row['Seq'] || row['seq'] || '';
-  const date = row['Date'] || row['date'] || '';
-  const arrivalDate = row['Arrival Date'] || row['arrival_date'] || '';
-  const from = (row['From'] || row['from'] || '').toString().trim().toUpperCase();
-  const to = (row['To'] || row['to'] || '').toString().trim().toUpperCase();
-  const commodity = (row['Commodity'] || row['commodity'] || '').toString().trim().toUpperCase();
-  const destination = (row['Destination'] || row['destination'] || '').toString().trim().toUpperCase();
-  const count1 = row['Count1'] || row['count1'] || '';
-
-  if (!srNo || !zone) return null;
+  const fields = getFoisFields(row);
+  if (!fields.srNo || !fields.division || !fields.indentNo) return null;
 
   return {
-    indent_number: String(srNo).trim(),
-    zone,
-    division: code,
-    station_from: from,
-    station_to: to,
-    commodity,
-    rake_type: destination,
-    wagons_demanded: parseInt(count1) || 0,
-    indent_date: normalizeDate(date),
-    maturity_date: normalizeDate(arrivalDate),
+    indent_number: fields.indentNo,
+    zone: fields.division,
+    division: fields.division,
+    station_from: fields.stationFrom,
+    station_to: fields.destination,
+    commodity: fields.commodity,
+    rake_type: fields.rakeCmdt,
+    wagons_demanded: parseInt(fields.indented8w, 10) || parseInt(fields.indentedUnits, 10) || 0,
+    indent_date: normalizeDate(fields.indentDate),
+    maturity_date: normalizeDate(fields.expectedLoadingDate),
     odr_matched: false,
     matched_odr_number: '',
     upload_batch_id: batchId,
-    raw_data: { Seq: seq }
+    raw_data: buildFoisRawData(fields)
+  };
+}
+
+export function getIndentRowRejectionReason(row) {
+  const fields = getFoisFields(row);
+  const missing = [];
+  if (!fields.srNo) missing.push('S.NO.');
+  if (!fields.division) missing.push('DVSN');
+  if (!fields.indentNo) missing.push('NO.');
+  return missing.length
+    ? `Missing required Matured Indent field(s): ${missing.join(', ')}`
+    : '';
+}
+
+function getFoisFields(row) {
+  return {
+    srNo: cell(row, 'S.NO.'),
+    division: cell(row, 'DVSN').toUpperCase(),
+    stationFrom: cell(row, 'STTN FROM').toUpperCase(),
+    indentNo: cell(row, 'NO.'),
+    indentDate: cell(row, 'DATE'),
+    indentTime: cell(row, 'TIME'),
+    expectedLoadingDate: cell(row, 'EXPECTED LOADING DATE'),
+    cnsr: cell(row, 'CNSR').toUpperCase(),
+    cnsg: cell(row, 'CNSG').toUpperCase(),
+    commodity: cell(row, 'CMDT').toUpperCase(),
+    tt: cell(row, 'TT'),
+    pc: cell(row, 'PC'),
+    pbf: cell(row, 'PBF'),
+    via: cell(row, 'VIA').toUpperCase(),
+    rakeCmdt: cell(row, 'RAKE CMDT').toUpperCase(),
+    destination: cell(row, 'DSTN').toUpperCase(),
+    indentType: cell(row, 'TYPE').toUpperCase(),
+    indentedUnits: cell(row, 'INDENTED UNTS'),
+    indented8w: cell(row, 'INDENTED 8W'),
+    otsgUnits: cell(row, 'OTSG UNTS'),
+    otsg8w: cell(row, 'OTSG 8W'),
+    suppliedUnits: cell(row, 'SUPPLIED UNTS'),
+    suppliedTime: cell(row, 'SUPPLIED TIME'),
+  };
+}
+
+function cell(row, key) {
+  const normalized = normalizeRow(row);
+  return String(normalized[normalizeHeader(key)] ?? '').trim();
+}
+
+function normalizeRow(row) {
+  return Object.entries(row || {}).reduce((acc, [key, value]) => {
+    acc[normalizeHeader(key)] = value;
+    return acc;
+  }, {});
+}
+
+function normalizeHeader(header) {
+  return String(header || '').trim().toUpperCase();
+}
+
+function buildFoisRawData(fields) {
+  return {
+    srNo: fields.srNo,
+    indent_no: fields.indentNo,
+    indent_time: fields.indentTime,
+    expected_loading_date: fields.expectedLoadingDate,
+    cnsr: fields.cnsr,
+    cnsg: fields.cnsg,
+    via: fields.via,
+    pbf: fields.pbf,
+    pc: fields.pc,
+    tt: fields.tt,
+    indent_type: fields.indentType,
+    indented_units: fields.indentedUnits,
+    indented_8w: fields.indented8w,
+    otsg_units: fields.otsgUnits,
+    otsg_8w: fields.otsg8w,
+    supplied_units: fields.suppliedUnits,
+    supplied_time: fields.suppliedTime,
+    Time: fields.indentTime,
+    UpdatedTime: fields.suppliedTime,
   };
 }
 

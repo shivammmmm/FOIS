@@ -171,6 +171,17 @@ function withDefaults(entityName, record) {
 }
 
 function fromRow(row) {
+  if (row && row.event_key !== undefined && row.notification_type !== undefined) {
+    return {
+      id: row.id,
+      event_key: row.event_key,
+      notification_type: row.notification_type,
+      station_code: row.station_code,
+      movement_reference: row.movement_reference,
+      created_at: row.created_at?.toISOString?.() || row.created_at,
+    };
+  }
+
   return {
     ...Object.fromEntries(
       STATION_ENRICHMENT_COLUMN_NAMES.filter(
@@ -790,6 +801,36 @@ export async function createRecord(entityName, record) {
     return { ...created, created_at: createdAt };
   }
 
+  if (entityName === "notification_history") {
+    const createdAt = created.created_at || nowIso();
+    await pool.query(
+      `INSERT INTO notification_history (
+         id,
+         event_key,
+         notification_type,
+         station_code,
+         movement_reference,
+         created_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (event_key) DO UPDATE SET
+         notification_type = EXCLUDED.notification_type,
+         station_code = EXCLUDED.station_code,
+         movement_reference = EXCLUDED.movement_reference`,
+      [
+        String(created.id),
+        String(created.event_key || ""),
+        String(created.notification_type || ""),
+        created.station_code == null ? null : String(created.station_code),
+        created.movement_reference == null
+          ? null
+          : String(created.movement_reference),
+        createdAt,
+      ]
+    );
+    return { ...created, created_at: createdAt };
+  }
+
   await pool.query(
     `INSERT INTO ${tableName} (id, data, created_date)
      VALUES ($1, $2, $3)
@@ -909,6 +950,36 @@ export async function updateRecord(entityName, id, fields) {
             ? null
             : String(updated[columnName])
         ),
+      ]
+    );
+    return { ...updated, created_at: createdAt };
+  }
+
+  if (entityName === "notification_history") {
+    const createdAt = updated.created_at || nowIso();
+    await pool.query(
+      `INSERT INTO notification_history (
+         id,
+         event_key,
+         notification_type,
+         station_code,
+         movement_reference,
+         created_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (event_key) DO UPDATE SET
+         notification_type = EXCLUDED.notification_type,
+         station_code = EXCLUDED.station_code,
+         movement_reference = EXCLUDED.movement_reference`,
+      [
+        String(updated.id),
+        String(updated.event_key || ""),
+        String(updated.notification_type || ""),
+        updated.station_code == null ? null : String(updated.station_code),
+        updated.movement_reference == null
+          ? null
+          : String(updated.movement_reference),
+        createdAt,
       ]
     );
     return { ...updated, created_at: createdAt };

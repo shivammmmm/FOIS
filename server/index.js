@@ -37,6 +37,7 @@ import {
 import {
   compareODRwithIndents,
   generateBatchId,
+  getIndentRowRejectionReason,
   parseIndentRow,
   parseODRRow,
 } from "../src/utils/odrcomparison.js";
@@ -879,9 +880,36 @@ app.post(
               .map((row) => parseODRRow(row, batchId))
               .filter(Boolean);
           } else {
-            sheetParsed = sheetRows
-              .map((row) => parseIndentRow(row, batchId))
-              .filter(Boolean);
+            let firstRejectedIndentRow = null;
+            let firstRejectedIndentReason = "";
+            sheetParsed = [];
+
+            for (const row of sheetRows) {
+              const parsed = parseIndentRow(row, batchId);
+              if (parsed) {
+                sheetParsed.push(parsed);
+                continue;
+              }
+
+              if (!firstRejectedIndentRow) {
+                firstRejectedIndentRow = row;
+                firstRejectedIndentReason =
+                  getIndentRowRejectionReason(row) ||
+                  "Matured Indent row parser returned no record";
+              }
+            }
+
+            const rejectedRows = sheetRows.length - sheetParsed.length;
+            console.info(
+              `[MaturedIndent Upload] sheet="${sheetName}" total rows read=${sheetRows.length}, accepted rows=${sheetParsed.length}, rejected rows=${rejectedRows}`
+            );
+            if (firstRejectedIndentRow) {
+              console.warn("[MaturedIndent Upload] first rejected row", {
+                sheetName,
+                reason: firstRejectedIndentReason,
+                row: firstRejectedIndentRow,
+              });
+            }
           }
 
           sheetStats.validRows = sheetParsed.length;
