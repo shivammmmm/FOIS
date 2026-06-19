@@ -119,19 +119,6 @@ export default function GlobalSearch() {
         )}
       </div>
 
-      <label className="flex items-center gap-2 text-xs text-muted-foreground mt-2 select-none">
-        <input
-          type="checkbox"
-          checked={onlyMyStations}
-          onChange={(e) => setOnlyMyStations(e.target.checked)}
-          className="w-4 h-4 accent-primary"
-        />
-        Only My Stations
-        <span className="ml-auto inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-primary/30 bg-primary/5 text-primary font-semibold">
-          ⭐ Watched Station
-        </span>
-      </label>
-
       {open && (results.length > 0 || loading) && (
         <div className="absolute top-full mt-1 w-full bg-card border border-border rounded-lg shadow-xl z-50 overflow-hidden">
           {loading && (

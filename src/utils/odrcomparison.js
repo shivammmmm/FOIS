@@ -7,6 +7,37 @@ export function generateBatchId() {
   return `BATCH-${Date.now()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
 }
 
+const WAGON_TYPE_CODES = new Set([
+  "BCN",
+  "BCNA",
+  "BCNAHSM1",
+  "BCNHL",
+  "BOBR",
+  "BOBRN",
+  "BOBRNHSM1",
+  "BOBRNHSM2",
+  "BOSM",
+  "BOST",
+  "BOXCL",
+  "BOXN",
+  "BOXNEL",
+  "BOXNHA",
+  "BOXNHL",
+  "BOXNHL25T",
+  "BOXNR",
+  "BTPN",
+  "NMG",
+  "NMGH",
+]);
+
+function isWagonType(value) {
+  if (!value) return false;
+  const val = String(value).trim().toUpperCase();
+  if (/^\d+$/.test(val)) return true;
+  if (WAGON_TYPE_CODES.has(val)) return true;
+  return /^(BOX|BOB|BOS|BCN|BTP|NMG)/.test(val);
+}
+
 /**
  * Parse a raw Excel row (ODR file) into a FreightMovement record.
  * Uses normalized FOIS column names.
@@ -18,6 +49,9 @@ export function parseODRRow(row, batchId) {
   const movementType = detectMovementType(fields.pc, fields.indentType, fields.tt);
   const status = detectStatus(fields.expectedLoadingDate);
 
+  const rawRakeCmdt = fields.rakeCmdt || "";
+  const isWagon = isWagonType(rawRakeCmdt);
+
   return {
     odr_number: fields.indentNo,
     zone: fields.division,
@@ -25,7 +59,9 @@ export function parseODRRow(row, batchId) {
     station_from: fields.stationFrom,
     station_to: fields.destination,
     commodity: fields.commodity,
-    rake_type: fields.rakeCmdt,
+    rake_type: isWagon ? rawRakeCmdt : "",
+    rake_cmdt: !isWagon ? rawRakeCmdt : "",
+    rake_commodity_code: !isWagon ? rawRakeCmdt : "",
     wagons: parseInt(fields.suppliedUnits, 10) || parseInt(fields.indented8w, 10) || parseInt(fields.indentedUnits, 10) || 0,
     arrival_date: normalizeDate(fields.expectedLoadingDate),
     departure_date: normalizeDate(fields.indentDate),
@@ -45,6 +81,9 @@ export function parseIndentRow(row, batchId) {
   const fields = getFoisFields(row);
   if (!fields.srNo || !fields.division || !fields.indentNo) return null;
 
+  const rawRakeCmdt = fields.rakeCmdt || "";
+  const isWagon = isWagonType(rawRakeCmdt);
+
   return {
     indent_number: fields.indentNo,
     zone: fields.division,
@@ -52,7 +91,9 @@ export function parseIndentRow(row, batchId) {
     station_from: fields.stationFrom,
     station_to: fields.destination,
     commodity: fields.commodity,
-    rake_type: fields.rakeCmdt,
+    rake_type: isWagon ? rawRakeCmdt : "",
+    rake_cmdt: !isWagon ? rawRakeCmdt : "",
+    rake_commodity_code: !isWagon ? rawRakeCmdt : "",
     wagons_demanded: parseInt(fields.indented8w, 10) || parseInt(fields.indentedUnits, 10) || 0,
     indent_date: normalizeDate(fields.indentDate),
     maturity_date: normalizeDate(fields.expectedLoadingDate),

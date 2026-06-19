@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { base44 } from '@/api/base44Client';
 import { Bell, AlertTriangle, Copy, ArrowDownToLine, ArrowUpFromLine, Clock, Trash2, CheckCheck, ChevronDown } from 'lucide-react';
-import { getDivisionName, getStationName, getCommodityName } from '@/utils/railwayDictionary';
+import { getDivisionName, getStationName, getCommodityName, getRakeTypeName } from '@/utils/railwayDictionary';
+import { isWagonType } from "@/utils/freightRecordFilters";
 
 const TYPE_CONFIG = {
   MissingODR:   { icon: AlertTriangle,   color: 'text-red-400',     bg: 'bg-red-500/10',     label: 'Missing ODR' },
@@ -32,8 +33,8 @@ export default function Notifications() {
   const [filterDivision, setFilterDivision]       = useState('All');
   const [selectedInwardStations, setSelectedInwardStations] = useState([]);
   const [selectedOutwardStations, setSelectedOutwardStations] = useState([]);
-  const [filterCommGroup, setFilterCommGroup]     = useState('All');
   const [filterComm, setFilterComm]             = useState('All');
+  const [filterRakeCmdt, setFilterRakeCmdt]     = useState('All');
 
   useEffect(() => { loadData(); }, []);
 
@@ -70,13 +71,16 @@ export default function Notifications() {
   const outwardStations = ['All', ...new Set(movements.filter(r => r.movement_type === 'Outward').map(r => r.station_from).filter(Boolean)).values()].sort();
   const divisions       = ['All', ...new Set(notifs.map(n => n.related_division).filter(Boolean)).values()].sort();
 
-  const commodityGroups = ['All', ...new Set(movements.map(m => m.commodity_group || 'General/Other').filter(Boolean))].sort();
-  const commodities = ['All', ...new Set(
-    movements
-      .filter(m => filterCommGroup === 'All' || (m.commodity_group || 'General/Other') === filterCommGroup)
-      .map(m => m.commodity)
-      .filter(Boolean)
-  )].sort();
+  const commodities = ['All', ...new Set(movements.map(getCommVal).filter(Boolean))].sort();
+
+  const rakeSourceMovements = filterComm === 'All'
+    ? movements
+    : movements.filter((m) => getCommVal(m) === filterComm);
+
+  const rakeCmdts = [
+    'All',
+    ...new Set(rakeSourceMovements.map(getRakeCmdtVal).filter(Boolean))
+  ].sort();
 
   const isInwardType  = (type) => INWARD_TYPES.includes(type);
   const isOutwardType = (type) => OUTWARD_TYPES.includes(type);
@@ -103,12 +107,23 @@ export default function Notifications() {
       }
     }
 
-    // Commodity filters — match against related movement
-    if (filterCommGroup !== 'All' || filterComm !== 'All') {
-      const relatedMovement = movements.find(m => m.odr_number === n.related_odr);
-      if (!relatedMovement) return false;
-      if (filterCommGroup !== 'All' && (relatedMovement.commodity_group || 'General/Other') !== filterCommGroup) return false;
-      if (filterComm !== 'All' && relatedMovement.commodity !== filterComm) return false;
+    // Commodity & Rake CMDT filters — match against related movements
+    if (filterComm !== 'All' || filterRakeCmdt !== 'All') {
+      const batchMovements = n.batch_id ? movements.filter(m => String(m.upload_batch_id) === String(n.batch_id)) : [];
+      const odrMovements = n.related_odr ? movements.filter(m => String(m.odr_number) === String(n.related_odr)) : [];
+      const relatedMovements = [...batchMovements, ...odrMovements];
+      
+      if (relatedMovements.length === 0) return false;
+      
+      if (filterComm !== 'All') {
+        const hasComm = relatedMovements.some(m => getCommVal(m) === filterComm);
+        if (!hasComm) return false;
+      }
+      
+      if (filterRakeCmdt !== 'All') {
+        const hasRake = relatedMovements.some(m => getRakeCmdtVal(m) === filterRakeCmdt);
+        if (!hasRake) return false;
+      }
     }
 
     return true;
@@ -196,26 +211,26 @@ export default function Notifications() {
           )}
 
           <select
-            value={filterCommGroup}
-            onChange={e => { setFilterCommGroup(e.target.value); setFilterComm('All'); }}
-            className="appearance-none bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer hover:border-primary/50 transition-colors"
-          >
-            <option value="All">All Commodity Groups</option>
-            {commodityGroups.filter(cg => cg !== 'All').map(cg => <option key={cg} value={cg}>{cg}</option>)}
-          </select>
-
-          <select
             value={filterComm}
-            onChange={e => setFilterComm(e.target.value)}
+            onChange={e => { setFilterComm(e.target.value); setFilterRakeCmdt('All'); }}
             className="appearance-none bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer hover:border-primary/50 transition-colors"
           >
             <option value="All">All Commodities</option>
-            {commodities.filter(c => c !== 'All').map(c => <option key={c} value={c}>{getCommodityName(c)} ({c})</option>)}
+            {commodities.filter(c => c !== 'All').map(c => <option key={c} value={c}>{c}</option>)}
           </select>
 
-          {(filterDivision !== 'All' || selectedInwardStations.length > 0 || selectedOutwardStations.length > 0 || filterCommGroup !== 'All' || filterComm !== 'All') && (
+          <select
+            value={filterRakeCmdt}
+            onChange={e => setFilterRakeCmdt(e.target.value)}
+            className="appearance-none bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer hover:border-primary/50 transition-colors"
+          >
+            <option value="All">All Rake CMDT</option>
+            {rakeCmdts.filter(c => c !== 'All').map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+
+          {(filterDivision !== 'All' || selectedInwardStations.length > 0 || selectedOutwardStations.length > 0 || filterComm !== 'All' || filterRakeCmdt !== 'All') && (
             <button
-              onClick={() => { setFilterDivision('All'); setSelectedInwardStations([]); setSelectedOutwardStations([]); setFilterCommGroup('All'); setFilterComm('All'); }}
+              onClick={() => { setFilterDivision('All'); setSelectedInwardStations([]); setSelectedOutwardStations([]); setFilterComm('All'); setFilterRakeCmdt('All'); }}
               className="px-3 py-2 text-xs text-destructive hover:bg-destructive/10 rounded-lg border border-destructive/30 transition-colors cursor-pointer"
             >
               Clear Filters
@@ -338,6 +353,27 @@ function DropdownFilter({ value, onChange, options, renderOption }) {
       <ChevronDown className="w-3.5 h-3.5 text-muted-foreground absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
     </div>
   );
+}
+
+function readRaw(record, ...keys) {
+  for (const key of keys) {
+    const value = record?.raw_data?.[key] ?? record?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== "")
+      return value;
+  }
+  return "";
+}
+
+function getCommVal(record) {
+  return readRaw(record, "Product") || getCommodityName(record.commodity || record.commodity_code) || record.commodity || record.commodity_code || "";
+}
+
+function getRakeCmdtVal(record) {
+  const code = record.rake_cmdt || record.rake_commodity_code || "";
+  if (code && !isWagonType(code)) return code;
+  const legacyCode = record.rake_type || "";
+  if (legacyCode && !isWagonType(legacyCode)) return legacyCode;
+  return "";
 }
 
 function MultiStationSelect({ label, stations, selected, onChange }) {

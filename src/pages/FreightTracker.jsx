@@ -9,6 +9,7 @@ import {
   getDistrictsFromDivisions,
   divisionMatchesDistrict,
 } from "@/utils/railwayDictionary";
+import { isWagonType } from "@/utils/freightRecordFilters";
 import { getStationMeta } from "@/utils/stationMaster";
 import FreightDetailsModal from "@/components/FreightDetailsModal";
 import { useAuth } from "@/lib/AuthContext";
@@ -100,11 +101,16 @@ export default function FreightTracker() {
   ].sort();
   const commodities = [
     "All",
-    ...new Set(records.map((r) => r.commodity).filter(Boolean)),
+    ...new Set(records.map(getCommVal).filter(Boolean)),
   ].sort();
+  // Rake CMDT options cascade from selected commodity — only show values from matching records
+  const rakeSourceRecords =
+    filterCommodity === "All"
+      ? records
+      : records.filter((r) => getCommVal(r) === filterCommodity);
   const rakeCmdts = [
     "All",
-    ...new Set(records.map((r) => r.rake_type).filter(Boolean)),
+    ...new Set(rakeSourceRecords.map(getRakeCmdtVal).filter(Boolean)),
   ].sort();
 
   const filtered = records.filter((r) => {
@@ -120,7 +126,9 @@ export default function FreightTracker() {
       r.division?.toLowerCase().includes(q) ||
       r.commodity?.toLowerCase().includes(q) ||
       getCommodityName(r.commodity)?.toLowerCase().includes(q) ||
-      r.rake_type?.toLowerCase().includes(q);
+      r.rake_type?.toLowerCase().includes(q) ||
+      r.rake_cmdt?.toLowerCase().includes(q) ||
+      getRakeCmdtVal(r)?.toLowerCase().includes(q);
     const matchZone =
       filterZone === "All" ||
       String(r.zone || "")
@@ -138,9 +146,9 @@ export default function FreightTracker() {
       divisionMatchesDistrict(r.division, filterDistrict);
     const matchDiv = filterDivision === "All" || r.division === filterDivision;
     const matchComm =
-      filterCommodity === "All" || r.commodity === filterCommodity;
+      filterCommodity === "All" || getCommVal(r) === filterCommodity;
     const matchRakeCmdt =
-      filterRakeCmdt === "All" || r.rake_type === filterRakeCmdt;
+      filterRakeCmdt === "All" || getRakeCmdtVal(r) === filterRakeCmdt;
     const matchMov =
       filterMovement === "All" || r.movement_type === filterMovement;
     const matchStatus = filterStatus === "All" || r.status === filterStatus;
@@ -293,6 +301,7 @@ export default function FreightTracker() {
           value={filterCommodity}
           onChange={(v) => {
             setFilterCommodity(v);
+            setFilterRakeCmdt("All"); // reset rake when commodity changes
             resetPage();
           }}
           options={commodities}
@@ -481,6 +490,7 @@ function MovementTable({ title, records, type, onSelect }) {
             "District",
             "Commodity (CMDT)",
             "Rake CMDT",
+            "Rake Type",
             "Wagons",
             "Departure Date",
             "Arrival Date",
@@ -512,13 +522,14 @@ function MovementTable({ title, records, type, onSelect }) {
           <th className="border border-slate-300 bg-white px-2 py-2" />
           <th className="border border-slate-300 bg-white px-2 py-2" />
           <th className="border border-slate-300 bg-white px-2 py-2" />
+          <th className="border border-slate-300 bg-white px-2 py-2" />
         </tr>
       </thead>
       <tbody>
         {records.length === 0 ? (
           <tr>
             <td
-              colSpan={10}
+              colSpan={11}
               className="border border-slate-300 px-4 py-8 text-center text-muted-foreground"
             >
               No {type.toLowerCase()} records.
@@ -576,14 +587,9 @@ function MovementRow({ record, type, onSelect }) {
           divisionMeta?.district
         }
       />
-      <GridCell
-        value={
-          readRaw(record, "Product") ||
-          getCommodityName(record.commodity) ||
-          record.commodity
-        }
-      />
-      <GridCell value={getRakeTypeName(record.rake_type) || record.rake_type} />
+      <GridCell value={getCommVal(record)} />
+      <GridCell value={getRakeCmdtVal(record)} />
+      <GridCell value={getRakeTypeName(getWagonTypeVal(record)) || getWagonTypeVal(record)} />
       <GridCell value={record.wagons} align="center" />
       <GridCell
         value={formatDateTime(record.departure_date, record.raw_data?.Time)}
@@ -655,6 +661,24 @@ function readRaw(record, ...keys) {
     if (value !== undefined && value !== null && String(value).trim() !== "")
       return value;
   }
+  return "";
+}
+
+function getCommVal(record) {
+  return readRaw(record, "Product") || getCommodityName(record.commodity) || record.commodity || "";
+}
+
+function getRakeCmdtVal(record) {
+  const code = record.rake_cmdt || record.rake_commodity_code || "";
+  if (code && !isWagonType(code)) return code;
+  const legacyCode = record.rake_type || "";
+  if (legacyCode && !isWagonType(legacyCode)) return legacyCode;
+  return "";
+}
+
+function getWagonTypeVal(record) {
+  const code = record.rake_type || "";
+  if (code && isWagonType(code)) return code;
   return "";
 }
 

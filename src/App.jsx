@@ -17,7 +17,7 @@ import ProtectedRoute from "@/components/ProtectedRoute";
 import RoleProtectedRoute from "@/components/RoleProtectedRoute";
 
 // Page imports
-import Dashboard from "@/pages/Dashboard";
+// Dashboard removed — no longer used
 import FreightTracker from "@/pages/FreightTracker";
 import InwardMonitor from "@/pages/InwardMonitor.jsx";
 import OutwardMonitor from "@/pages/OutwardMonitor.jsx";
@@ -42,9 +42,9 @@ const RoleHomeRedirect = () => {
   if (!isAuthenticated) return <Navigate to="/login" replace />;
 
   return ADMIN_ROLES.includes(user?.role) ? (
-    <Navigate to="/admin" replace />
+    <Navigate to="/admin/freight" replace />
   ) : (
-    <Navigate to="/dashboard" replace />
+    <Navigate to="/inward-monitor" replace />
   );
 };
 
@@ -102,7 +102,7 @@ const AuthenticatedApp = () => {
           }
         >
           <Route element={<Layout />}>
-            <Route path="/admin" element={<Dashboard />} />
+            <Route path="/admin" element={<Navigate to="/admin/freight" replace />} />
             <Route path="/admin/upload" element={<UploadCenter />} />
             <Route path="/admin/freight" element={<FreightTracker />} />
             <Route path="/admin/inward" element={<InwardMonitor />} />
@@ -146,7 +146,7 @@ const AuthenticatedApp = () => {
           }
         >
           <Route element={<Layout />}>
-            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/dashboard" element={<Navigate to="/inward-monitor" replace />} />
             <Route path="/search" element={<FreightTracker />} />
             <Route path="/inward-monitor" element={<InwardMonitor />} />
             <Route path="/outward-monitor" element={<OutwardMonitor />} />

@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Link, useLocation, Outlet } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import {
-  LayoutDashboard,
   Train,
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -20,7 +19,6 @@ import { useAuth } from "@/lib/AuthContext";
 
 // ⚙️ ADMINISTRATIVE NAVIGATION MATRIX (ADMIN SCALED ONLY)
 const adminNavItems = [
-  { path: "/admin", label: "Admin Dashboard", icon: LayoutDashboard },
   {
     path: "/admin/master-management",
     label: "Master Management",
@@ -38,7 +36,6 @@ const adminNavItems = [
 
 // 👥 STANDARD USER NAVIGATION MATRIX (CLEAN HOUSEKEEPING)
 const userNavItems = [
-  { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { path: "/search", label: "Search", icon: Train },
   { path: "/inward-monitor", label: "Inward Monitor", icon: ArrowDownToLine }, // Connected seamlessly to User Routes
   { path: "/outward-monitor", label: "Outward Monitor", icon: ArrowUpFromLine }, // Connected seamlessly to User Routes

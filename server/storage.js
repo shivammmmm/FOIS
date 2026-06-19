@@ -292,6 +292,7 @@ async function createEntityTable(tableName) {
         id TEXT PRIMARY KEY,
         commodity_code TEXT UNIQUE NOT NULL,
         commodity_name TEXT,
+        type TEXT,
         commodity_group_code TEXT,
         commodity_group_name TEXT,
         is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -520,6 +521,11 @@ export async function initializeStorage() {
     for (const tableName of Object.values(ENTITY_TABLES)) {
       await createEntityTable(tableName);
     }
+
+    // Automatically add type column if not exists
+    await pool.query(`
+      ALTER TABLE commodity_master ADD COLUMN IF NOT EXISTS type TEXT
+    `).catch(err => console.error("commodity_master migration failed on startup:", err));
 
     // Automatically backfill empty date columns from JSONB data on startup
     await pool.query(`

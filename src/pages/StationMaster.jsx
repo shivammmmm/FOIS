@@ -9,6 +9,7 @@ import {
   Upload,
 } from "lucide-react";
 import { apiClient } from "../api/apiClient";
+import SearchableSelect from "@/components/SearchableSelect";
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // safety
@@ -29,6 +30,37 @@ function toEmptyString(v) {
 
 function normalizeStationCode(code) {
   return String(code || "").trim().toUpperCase();
+}
+
+function normalizeMasterCode(code) {
+  return String(code || "").trim().toUpperCase();
+}
+
+function authHeaders() {
+  const token = localStorage.getItem("token") || "";
+  return token ? { Authorization: `Bearer ${token}` } : undefined;
+}
+
+function asItems(data) {
+  return Array.isArray(data) ? data : data?.items || [];
+}
+
+function resolveStateCode(value, stateOptions) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  const normalized = normalizeMasterCode(raw);
+  const matchByCode = stateOptions.find(
+    (state) => normalizeMasterCode(state?.code) === normalized
+  );
+  if (matchByCode?.code) return normalizeMasterCode(matchByCode.code);
+
+  const matchByName = stateOptions.find(
+    (state) => String(state?.name || "").trim().toUpperCase() === normalized
+  );
+  if (matchByName?.code) return normalizeMasterCode(matchByName.code);
+
+  return raw.includes(" ") && stateOptions.length === 0 ? "" : normalized;
 }
 
 
@@ -112,13 +144,16 @@ export default function StationMaster() {
     const loadStates = async () => {
       setLoadingStates(true);
       try {
-        const token = localStorage.getItem("token") || "";
         const res = await fetch("/api/masters/states", {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+          headers: authHeaders(),
         });
         if (!res.ok) throw new Error("Failed to load states");
         const data = await res.json();
-        setStates(Array.isArray(data) ? data : data?.items || []);
+        const items = asItems(data).map((state) => ({
+          ...state,
+          code: normalizeMasterCode(state?.code),
+        }));
+        setStates(items);
       } catch (err) {
         console.error("Failed to load states:", err);
         setStates([]);
@@ -130,10 +165,22 @@ export default function StationMaster() {
     loadStates();
   }, [showForm]);
 
+  useEffect(() => {
+    if (!showForm || !form.state || states.length === 0) return;
+
+    const stateCode = resolveStateCode(form.state, states);
+    if (!stateCode || stateCode === form.state) return;
+
+    setForm((current) =>
+      current.state === form.state ? { ...current, state: stateCode } : current
+    );
+  }, [form.state, showForm, states]);
+
   // Cascading effect: Load districts when state changes inside form parameters (native fetch)
   useEffect(() => {
     if (!showForm) return;
-    if (!form.state) {
+    const stateCode = resolveStateCode(form.state, states);
+    if (!stateCode) {
       setDistricts([]);
       return;
     }
@@ -141,14 +188,18 @@ export default function StationMaster() {
     const loadDistricts = async () => {
       setLoadingDistricts(true);
       try {
-        const token = localStorage.getItem("token") || "";
-        // backend contract in our fixes: state_code query token
-        const res = await fetch(`/api/masters/districts?state_code=${encodeURIComponent(form.state)}`, {
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        console.info("[StationMaster] Loading districts", { stateCode });
+        const res = await fetch(`/api/masters/districts?state_code=${encodeURIComponent(stateCode)}`, {
+          headers: authHeaders(),
         });
         if (!res.ok) throw new Error("Failed to load districts");
         const data = await res.json();
-        setDistricts(Array.isArray(data) ? data : data?.items || []);
+        const items = asItems(data);
+        setDistricts(items);
+        console.info("[StationMaster] Districts loaded", {
+          stateCode,
+          count: items.length,
+        });
       } catch (err) {
         console.error("Failed to load districts:", err);
         setDistricts([]);
@@ -158,7 +209,7 @@ export default function StationMaster() {
     };
 
     loadDistricts();
-  }, [form.state, showForm]);
+  }, [form.state, showForm, states]);
 
 
   const openAdd = () => {
@@ -565,54 +616,48 @@ const handleSave = async () => {
                 />
               </label>
 
-              {/* Upgraded Searchable Dropdown Selector for State Master */}
-              <label className="space-y-1">
+              {/* Searchable State Selector */}
+              <div className="space-y-1">
                 <div className="text-xs text-muted-foreground">
                   State * {loadingStates && <span className="text-[10px] text-primary animate-pulse">(Loading...)</span>}
                 </div>
-                <select
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                <SearchableSelect
+                  placeholder={loadingStates ? "Loading states..." : "-- Select State --"}
+                  disabled={saving || loadingStates}
                   value={form.state}
-                  onChange={(e) => {
-                    const selectedState = e.target.value;
-                    setForm((f) => ({ 
-                      ...f, 
-                      state: selectedState, 
-                      district: "" // Auto-reset child district on change
-                    }));
+                  options={states.map((st) => ({
+                    value: String(st.code).trim().toUpperCase(),
+                    label: `${st.name} (${st.code})`,
+                  }))}
+                  onChange={(val) => {
+                    const selectedState = normalizeMasterCode(val);
+                    setForm((f) => ({ ...f, state: selectedState, district: "" }));
                   }}
-                >
-                  <option value="">-- Select State --</option>
-                  {states.map((st) => (
-                    <option key={st.id || st.code} value={String(st.code).trim().toUpperCase()}>
-                      {st.name} ({st.code})
-                    </option>
+                />
+              </div>
 
-                  ))}
-                </select>
-              </label>
-
-              {/* Upgraded Cascading Dropdown Selector for District Master */}
-              <label className="space-y-1">
+              {/* Searchable District Selector (cascades from State) */}
+              <div className="space-y-1">
                 <div className="text-xs text-muted-foreground">
                   District * {loadingDistricts && <span className="text-[10px] text-primary animate-pulse">(Filtering...)</span>}
                 </div>
-                <select
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary disabled:opacity-50 disabled:cursor-not-allowed"
-                  value={form.district}
-                  onChange={(e) => setForm((f) => ({ ...f, district: e.target.value }))}
+                <SearchableSelect
+                  placeholder={
+                    !form.state
+                      ? "-- Select a state first --"
+                      : loadingDistricts
+                      ? "Loading districts..."
+                      : "-- Select District --"
+                  }
                   disabled={!form.state || loadingDistricts}
-                >
-                  <option value="">
-                    {!form.state ? "-- Select a state first --" : "-- Select District --"}
-                  </option>
-                  {districts.map((ds) => (
-                    <option key={ds.id || ds.code} value={ds.name}>
-                      {ds.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  value={form.district}
+                  options={districts.map((ds) => ({
+                    value: ds.name,
+                    label: ds.name,
+                  }))}
+                  onChange={(val) => setForm((f) => ({ ...f, district: val }))}
+                />
+              </div>
 
               <label className="space-y-1">
                 <div className="text-xs text-muted-foreground">Division</div>

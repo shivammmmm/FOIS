@@ -2,31 +2,35 @@ import { useEffect, useState, useRef } from "react";
 import { Bell, Save, ChevronDown } from "lucide-react";
 import { base44 } from "@/api/base44Client";
 import { useAuth } from "@/lib/AuthContext";
-import { getStationName, getCommodityName } from "@/utils/railwayDictionary";
+import { getStationName } from "@/utils/railwayDictionary";
+import { apiClient } from "@/api/apiClient"; // 🚀 Added to query Station Master reference data
 
 const OPTIONS = [
   ["inward_enabled", "Inward Notifications"],
   ["outward_enabled", "Outward Notifications"],
 ];
 
+// 🚀 FIXED DEFAULTS: Enforced array constraints for advanced custom selectors
 const DEFAULTS = {
   ...Object.fromEntries(OPTIONS.map(([key]) => [key, true])),
   stations: [],
+  zones: [],
+  states: [],
+  districts: [],
   commodities: [],
   rakeCmdts: [],
 };
-
-// NOTE: rebuilt to reuse the same Station/Commodity selectors UI and cascade behavior as Notifications.jsx
-// while keeping the existing persistence mechanism (UserNotificationPreference).
 
 export default function NotificationPreferences() {
   const { user } = useAuth();
 
   const [recordId, setRecordId] = useState(null);
   const [prefs, setPrefs] = useState(DEFAULTS);
+
   const [saving, setSaving] = useState(false);
 
   const [movements, setMovements] = useState([]);
+  const [stationsPool, setStationsPool] = useState([]); // 🚀 Station reference master database pool
   const [loadingMovements, setLoadingMovements] = useState(true);
 
   useEffect(() => {
@@ -42,6 +46,9 @@ export default function NotificationPreferences() {
         ...DEFAULTS,
         ...existing,
         stations: existing.stations || [],
+        zones: existing.zones || [],
+        states: existing.states || [],
+        districts: existing.districts || [],
         commodities: existing.commodities || [],
         rakeCmdts: existing.rakeCmdts || [],
       });
@@ -51,21 +58,22 @@ export default function NotificationPreferences() {
   }, [user?.id]);
 
   useEffect(() => {
-    const fetchMovements = async () => {
+    const fetchData = async () => {
       try {
-        const movData = await base44.entities.FreightMovement.list(
-          "-created_date",
-          1000
-        );
-        setMovements(movData);
+        const [movData, stnData] = await Promise.all([
+          base44.entities.FreightMovement.list("-created_date", 1000),
+          apiClient.stationMaster.list({ limit: 1000 }) // 🚀 Pulling clean station data reference
+        ]);
+        setMovements(movData || []);
+        setStationsPool(stnData?.items || []);
       } catch (err) {
-        console.error("Failed to load movements", err);
+        console.error("Failed to load component data streams", err);
       } finally {
         setLoadingMovements(false);
       }
     };
 
-    fetchMovements();
+    fetchData();
   }, []);
 
   const save = async () => {
@@ -73,10 +81,7 @@ export default function NotificationPreferences() {
     const payload = { ...prefs, user_id: user.id };
     try {
       const saved = recordId
-        ? await base44.entities.UserNotificationPreference.update(
-            recordId,
-            payload
-          )
+        ? await base44.entities.UserNotificationPreference.update(recordId, payload)
         : await base44.entities.UserNotificationPreference.create(payload);
       setRecordId(saved.id);
     } finally {
@@ -84,42 +89,43 @@ export default function NotificationPreferences() {
     }
   };
 
-  // Derive station lists from actual movement data (same as Notifications.jsx behavior)
-  const inwardStations = [
+  // 🚀 FIXED: Dynamic Lookup function to derive attributes through station reference maps safely
+  const getStationMeta = (stationCode) => {
+    if (!stationCode) return { zone: "—", state: "—", district: "—" };
+    const found = (stationsPool || []).find(s => s.station_code === stationCode);
+    return {
+      zone: found?.zone || "—",
+      state: found?.state || "—",
+      district: found?.district || "—"
+    };
+  };
+
+  // Unique combined active station items from raw movements history
+  const combinedStations = [
+    ...new Set(movements.flatMap(m => [m.station_from, m.station_to]).filter(Boolean))
+  ];
+
+  // 🚀 FIXED: Declare exactly once to remove redeclaration overlay error!
+  const stationOptions = ["All", ...combinedStations].sort();
+
+  // 🚀 CRITICAL FIX: Derive Zone/State/District lists reactively from lookup references to prevent empty strings
+  const zoneOptions = ["All", ...new Set(combinedStations.map(s => getStationMeta(s).zone).filter(z => z && z !== "—"))].sort();
+  const stateOptions = ["All", ...new Set(combinedStations.map(s => getStationMeta(s).state).filter(s => s && s !== "—"))].sort();
+  const districtOptions = ["All", ...new Set(combinedStations.map(s => getStationMeta(s).district).filter(d => d && d !== "—"))].sort();
+
+  // 🚀 FIX: Strictly evaluate commodity_code
+  const commodityOptions = ["All", ...new Set(movements.map(m => m.commodity_code).filter(Boolean))].sort();
+
+  // 🚀 FIX: Strictly use rake_commodity_code and block wagon structures (BOXN, BCNHL, BOXCHLES, etc.)
+  const WAGON_TYPES = ["BOXN", "BCNHL", "BOXNHL", "BTPN", "BOST", "BOXCHLES"];
+  const rakeCmdtOptions = [
     "All",
     ...new Set(
       movements
-        .filter((r) => r.movement_type === "Inward")
-        .map((r) => r.station_to)
+        .map(m => m.rake_commodity_code)
         .filter(Boolean)
-    ).values(),
-  ].sort();
-  const outwardStations = [
-    "All",
-    ...new Set(
-      movements
-        .filter((r) => r.movement_type === "Outward")
-        .map((r) => r.station_from)
-        .filter(Boolean)
-    ).values(),
-  ].sort();
-
-  // For preferences we reuse the station selector logic as one combined list
-  const stationOptions = [
-    "All",
-    ...new Set(
-      [...inwardStations, ...outwardStations].filter((s) => s !== "All")
-    ),
-  ].sort();
-
-  const commodities = [
-    "All",
-    ...new Set(movements.map((m) => m.product).filter(Boolean)),
-  ].sort();
-
-  const rakeCmdts = [
-    "All",
-    ...new Set(movements.map((m) => m.rake_cmdt).filter(Boolean)),
+        .filter(code => !WAGON_TYPES.includes(code.toUpperCase()))
+    )
   ].sort();
 
   return (
@@ -178,75 +184,105 @@ export default function NotificationPreferences() {
             Filter Preferences
           </h2>
           <p className="text-xs text-muted-foreground">
-            Restrict notifications to specific stations and commodities.
+            Restrict notifications to specific regions, stations, commodities and rake CMDT.
           </p>
         </div>
 
         {loadingMovements ? (
           <div className="h-24 bg-muted rounded-xl animate-pulse flex items-center justify-center text-sm text-muted-foreground">
-            Loading filters data...
+            Loading filters preference data...
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="flex items-center gap-3">
-              <MultiStationSelect
-                label="Stations"
-                stations={stationOptions}
-                selected={prefs.stations || []}
-                onChange={(vals) =>
-                  setPrefs((prev) => ({ ...prev, stations: vals }))
-                }
-              />
+            {/* Grid for dynamic select fields matrix mapping */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 items-end">
+              
+              {/* Zone Filter */}
+              <div className="flex flex-col space-y-1">
+                <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide">Zone</span>
+                <select
+                  value={prefs.zones?.[0] || "All"}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setPrefs(prev => ({ ...prev, zones: v === "All" ? [] : [v] }));
+                  }}
+                  className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer w-full hover:border-primary/50 transition-colors"
+                >
+                  {zoneOptions.map(z => <option key={z} value={z}>{z === "All" ? "All Zones" : z}</option>)}
+                </select>
+              </div>
 
-              <select
-                value={
-                  prefs.commodities && prefs.commodities.length === 1
-                    ? prefs.commodities[0]
-                    : "All"
-                }
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setPrefs((prev) => ({
-                    ...prev,
-                    commodities: v === "All" ? [] : [v],
-                  }));
-                }}
-                className="appearance-none bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer hover:border-primary/50 transition-colors"
-              >
-                <option value="All">All Commodities</option>
-                {commodities
-                  .filter((c) => c !== "All")
-                  .map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-              </select>
+              {/* State Filter */}
+              <div className="flex flex-col space-y-1">
+                <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide">State</span>
+                <select
+                  value={prefs.states?.[0] || "All"}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setPrefs(prev => ({ ...prev, states: v === "All" ? [] : [v] }));
+                  }}
+                  className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer w-full hover:border-primary/50 transition-colors"
+                >
+                  {stateOptions.map(st => <option key={st} value={st}>{st === "All" ? "All States" : st}</option>)}
+                </select>
+              </div>
 
-              <select
-                value={
-                  prefs.rakeCmdts && prefs.rakeCmdts.length === 1
-                    ? prefs.rakeCmdts[0]
-                    : "All"
-                }
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setPrefs((prev) => ({
-                    ...prev,
-                    rakeCmdts: v === "All" ? [] : [v],
-                  }));
-                }}
-                className="appearance-none bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer hover:border-primary/50 transition-colors"
-              >
-                <option value="All">All Rake CMDT</option>
-                {rakeCmdts
-                  .filter((c) => c !== "All")
-                  .map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-              </select>
+              {/* District Filter */}
+              <div className="flex flex-col space-y-1">
+                <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide">District</span>
+                <select
+                  value={prefs.districts?.[0] || "All"}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setPrefs(prev => ({ ...prev, districts: v === "All" ? [] : [v] }));
+                  }}
+                  className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer w-full hover:border-primary/50 transition-colors"
+                >
+                  {districtOptions.map(ds => <option key={ds} value={ds}>{ds === "All" ? "All Districts" : ds}</option>)}
+                </select>
+              </div>
+
+              {/* Combined Stations Multi Select */}
+              <div className="flex flex-col space-y-1">
+                <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide">Stations Watchlist</span>
+                <MultiStationSelect
+                  label="Select Stations"
+                  stations={stationOptions}
+                  selected={prefs.stations || []}
+                  onChange={(vals) => setPrefs((prev) => ({ ...prev, stations: vals }))}
+                />
+              </div>
+
+              {/* 🚀 FIX: Clean Commodity Select (Bound to commodity_code) */}
+              <div className="flex flex-col space-y-1">
+                <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide">Commodity</span>
+                <select
+                  value={prefs.commodities?.[0] || "All"}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setPrefs(prev => ({ ...prev, commodities: v === "All" ? [] : [v] }));
+                  }}
+                  className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer w-full hover:border-primary/50 transition-colors"
+                >
+                  {commodityOptions.map(c => <option key={c} value={c}>{c === "All" ? "All Commodities" : c}</option>)}
+                </select>
+              </div>
+
+              {/* 🚀 FIX: Clean Rake CMDT Select (Bound strictly to rake_commodity_code) */}
+              <div className="flex flex-col space-y-1">
+                <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wide">Rake CMDT</span>
+                <select
+                  value={prefs.rakeCmdts?.[0] || "All"}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setPrefs(prev => ({ ...prev, rakeCmdts: v === "All" ? [] : [v] }));
+                  }}
+                  className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer w-full hover:border-primary/50 transition-colors"
+                >
+                  {rakeCmdtOptions.map(c => <option key={c} value={c}>{c === "All" ? "All Rake CMDT" : c}</option>)}
+                </select>
+              </div>
+
             </div>
 
             <button
@@ -255,13 +291,16 @@ export default function NotificationPreferences() {
                 setPrefs((prev) => ({
                   ...prev,
                   stations: [],
+                  zones: [],
+                  states: [],
+                  districts: [],
                   commodities: [],
                   rakeCmdts: [],
                 }))
               }
               className="px-3 py-2 text-xs text-destructive hover:bg-destructive/10 rounded-lg border border-destructive/30 transition-colors cursor-pointer"
             >
-              Clear Filters
+              Clear Preferences Filters
             </button>
           </div>
         )}

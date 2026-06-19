@@ -51,7 +51,7 @@ function normalizeCommodityCode(code) {
     .toUpperCase();
 }
 
-async function bulkLookupCommodityMasters(codes) {
+async function bulkLookupCommodityMasters(codes, type = 'Commodity') {
   const { Pool } = await import("pg");
   const databaseUrl =
     process.env.DATABASE_URL ||
@@ -71,6 +71,7 @@ async function bulkLookupCommodityMasters(codes) {
       id TEXT PRIMARY KEY,
       commodity_code TEXT UNIQUE NOT NULL,
       commodity_name TEXT,
+      type TEXT,
       commodity_group_code TEXT,
       commodity_group_name TEXT,
       is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -80,10 +81,10 @@ async function bulkLookupCommodityMasters(codes) {
   `);
 
   const result = await pool.query(
-    `SELECT commodity_code, commodity_name, commodity_group_name
+    `SELECT commodity_code, commodity_name
      FROM commodity_master
-     WHERE commodity_code = ANY($1::text[])`,
-    [unique]
+     WHERE commodity_code = ANY($1::text[]) AND type = $2`,
+    [unique, type]
   );
 
   const map = {};
@@ -91,7 +92,7 @@ async function bulkLookupCommodityMasters(codes) {
     map[normalizeCommodityCode(row.commodity_code)] = {
       commodity_code: normalizeCommodityCode(row.commodity_code),
       commodity_name: row.commodity_name,
-      commodity_group: row.commodity_group_name,
+      commodity_group: null,
     };
   }
 
@@ -100,51 +101,7 @@ async function bulkLookupCommodityMasters(codes) {
 }
 
 async function bulkLookupRakeCommodityMasters(rakeCodes) {
-  const { Pool } = await import("pg");
-  const databaseUrl =
-    process.env.DATABASE_URL ||
-    "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-
-  const pool = new Pool({ connectionString: databaseUrl });
-  const unique = [
-    ...new Set(rakeCodes.map(normalizeCommodityCode).filter(Boolean)),
-  ];
-  if (unique.length === 0) {
-    await pool.end();
-    return {};
-  }
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS rake_commodity_master (
-      id TEXT PRIMARY KEY,
-      rake_commodity_code TEXT UNIQUE NOT NULL,
-      rake_commodity_name TEXT,
-      commodity_group_code TEXT,
-      commodity_group_name TEXT,
-      is_active BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-
-  const result = await pool.query(
-    `SELECT rake_commodity_code, rake_commodity_name, commodity_group_name
-     FROM rake_commodity_master
-     WHERE rake_commodity_code = ANY($1::text[])`,
-    [unique]
-  );
-
-  const map = {};
-  for (const row of result.rows) {
-    map[normalizeCommodityCode(row.rake_commodity_code)] = {
-      rake_commodity_code: normalizeCommodityCode(row.rake_commodity_code),
-      rake_commodity_name: row.rake_commodity_name,
-      rake_commodity_group: row.commodity_group_name,
-    };
-  }
-
-  await pool.end();
-  return map;
+  return bulkLookupCommodityMasters(rakeCodes, 'Rake CMDT');
 }
 
 async function enrichCommodityFields(records) {
@@ -153,30 +110,38 @@ async function enrichCommodityFields(records) {
     .map((r) => normalizeCommodityCode(r.commodity))
     .filter(Boolean);
   const rakeCommodityCodes = rows
-    .map((r) => normalizeCommodityCode(r.rake_type || r.rake_commodity_code))
+    .map((r) => normalizeCommodityCode(r.rake_cmdt))
+    .filter(Boolean);
+  const wagonTypeCodes = rows
+    .map((r) => normalizeCommodityCode(r.rake_type))
     .filter(Boolean);
 
-  const [commodityMap, rakeCommodityMap] = await Promise.all([
-    bulkLookupCommodityMasters(commodityCodes),
-    bulkLookupRakeCommodityMasters(rakeCommodityCodes),
+  const [commodityMap, rakeCommodityMap, wagonTypeMap] = await Promise.all([
+    bulkLookupCommodityMasters(commodityCodes, 'Commodity'),
+    bulkLookupCommodityMasters(rakeCommodityCodes, 'Rake CMDT'),
+    bulkLookupCommodityMasters(wagonTypeCodes, 'Wagon Type'),
   ]);
 
   return rows.map((r) => {
     const c = normalizeCommodityCode(r.commodity);
-    const rake = normalizeCommodityCode(r.rake_type || r.rake_commodity_code);
+    const rake = normalizeCommodityCode(r.rake_cmdt);
+    const wagon = normalizeCommodityCode(r.rake_type);
 
     const commodityEnriched = c ? commodityMap[c] : null;
     const rakeEnriched = rake ? rakeCommodityMap[rake] : null;
+    const wagonEnriched = wagon ? wagonTypeMap[wagon] : null;
 
     return {
       ...r,
       commodity_code: c || r.commodity_code,
       commodity_name: commodityEnriched?.commodity_name || null,
-      commodity_group: commodityEnriched?.commodity_group || null,
+      commodity_group: null,
 
       rake_commodity_code: rake || r.rake_commodity_code,
-      rake_commodity_name: rakeEnriched?.rake_commodity_name || null,
-      rake_commodity_group: rakeEnriched?.rake_commodity_group || null,
+      rake_commodity_name: rakeEnriched?.commodity_name || null,
+      rake_commodity_group: null,
+
+      rake_type_name: wagonEnriched?.commodity_name || null,
     };
   });
 }
@@ -1850,17 +1815,14 @@ app.post(
   async (req, res) => {
     const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
-    const {
-      commodity_code,
-      commodity_name,
-      commodity_group_code,
-      commodity_group_name,
-    } = req.body || {};
+    const code = req.body.code || req.body.commodity_code;
+    const full_name = req.body.full_name || req.body.commodity_name;
+    const type = req.body.type || "Commodity";
 
-    if (!commodity_code || !commodity_name) {
+    if (!code || !full_name) {
       return res
         .status(400)
-        .json({ error: "Commodity code and name are strictly required" });
+        .json({ error: "Code and Full Name are strictly required" });
     }
 
     let seederPool = null;
@@ -1872,20 +1834,18 @@ app.post(
 
       seederPool = new Pool({ connectionString: databaseUrl });
 
-      const normalizedCommodityCode = String(commodity_code)
-        .trim()
-        .toUpperCase();
-      const normalizedCommodityName = String(commodity_name).trim();
+      const normalizedCode = String(code).trim().toUpperCase();
+      const normalizedName = String(full_name).trim();
 
       const checkExist = await seederPool.query(
-        "SELECT id FROM commodity_master WHERE UPPER(commodity_code) = $1 LIMIT 1",
-        [normalizedCommodityCode]
+        "SELECT id FROM commodity_master WHERE UPPER(commodity_code) = $1 AND type = $2 LIMIT 1",
+        [normalizedCode, type]
       );
 
       if (checkExist.rows.length > 0) {
         return res
           .status(400)
-          .json({ error: "Commodity code already registered" });
+          .json({ error: "Code already registered for this type" });
       }
 
       const maxRes = await seederPool.query("SELECT id FROM commodity_master");
@@ -1897,47 +1857,33 @@ app.post(
         if (ids.length > 0) nextId = Math.max(...ids) + 1;
       }
 
-      const cgCode = commodity_group_code
-        ? String(commodity_group_code).trim()
-        : "GEN";
-      const cgName = commodity_group_name
-        ? String(commodity_group_name).trim()
-        : "GENERAL";
-
-      // Verified schema from container: commodity_master has (id, commodity_code, commodity_name, commodity_group_code, commodity_group_name, is_active)
       const result = await seederPool.query(
         `INSERT INTO commodity_master
-        (id, commodity_code, commodity_name, commodity_group_code, commodity_group_name, is_active, created_at, updated_at)
+        (id, commodity_code, commodity_name, type, commodity_group_code, commodity_group_name, is_active, created_at, updated_at)
        VALUES
-        ($1, $2, $3, $4, $5, TRUE, NOW(), NOW())
+        ($1, $2, $3, $4, 'GEN', 'GENERAL', TRUE, NOW(), NOW())
        RETURNING *`,
         [
           String(nextId),
-          normalizedCommodityCode,
-          normalizedCommodityName,
-          cgCode,
-          cgName,
+          normalizedCode,
+          normalizedName,
+          type,
         ]
       );
 
-      return res.status(201).json(result.rows[0]);
+      const row = result.rows[0];
+      return res.status(201).json({
+        id: row.id,
+        code: row.commodity_code,
+        full_name: row.commodity_name,
+        type: row.type,
+      });
     } catch (error) {
       console.error("[POST /api/masters/commodities] failed", {
         request_id: requestId,
         error_message: error?.message,
         error_stack: error?.stack,
-        payload_preview: (() => {
-          try {
-            return JSON.stringify({
-              commodity_code,
-              commodity_name,
-              commodity_group_code,
-              commodity_group_name,
-            });
-          } catch {
-            return "[unserializable payload]";
-          }
-        })(),
+        payload_preview: JSON.stringify(req.body),
       });
       return res.status(500).json({ error: "Internal Server Error" });
     } finally {
