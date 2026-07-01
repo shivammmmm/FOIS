@@ -1,256 +1,380 @@
-import { useState, useEffect, useRef } from 'react';
-import { base44 } from '@/api/base44Client';
-import { Bell, AlertTriangle, Copy, ArrowDownToLine, ArrowUpFromLine, Clock, Trash2, CheckCheck, ChevronDown } from 'lucide-react';
-import { getDivisionName, getStationName, getCommodityName, getRakeTypeName } from '@/utils/railwayDictionary';
-import { isWagonType } from "@/utils/freightRecordFilters";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  AlertTriangle,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Bell,
+  CheckCheck,
+  Clock,
+  Copy,
+  Save,
+  Trash2,
+} from "lucide-react";
+import { base44 } from "@/api/base44Client";
+import MultiSelectFilter from "@/components/MultiSelectFilter";
+import { useAuth } from "@/lib/AuthContext";
+import { getDivisionName } from "@/utils/railwayDictionary";
+import {
+  getBusinessRakeCmdtCode as getRakeCmdtCode,
+  getBusinessRakeCmdtDisplay as getRakeCmdtDisplay,
+} from "@/utils/freightRecordFilters";
+import { formatStationNameAndCode, getStationMeta } from "@/utils/stationMaster";
+import {
+  clearPersistentFilters,
+  normalizeMultiValue,
+  optionMatches,
+  readPersistentFilters,
+  writePersistentFilters,
+} from "@/utils/persistentFilters";
+
+const FILTER_SOURCE = "notifications";
+const SAVED_SOURCE = "Notifications";
 
 const TYPE_CONFIG = {
-  MissingODR:   { icon: AlertTriangle,   color: 'text-red-400',     bg: 'bg-red-500/10',     label: 'Missing ODR' },
-  DuplicateODR: { icon: Copy,            color: 'text-orange-400',  bg: 'bg-orange-500/10',  label: 'Duplicate ODR' },
-  Arrival:      { icon: ArrowDownToLine, color: 'text-emerald-400', bg: 'bg-emerald-500/10', label: 'Arrival' },
-  Departure:    { icon: ArrowUpFromLine, color: 'text-blue-400',    bg: 'bg-blue-500/10',    label: 'Departure' },
-  Delay:        { icon: Clock,           color: 'text-amber-400',   bg: 'bg-amber-500/10',   label: 'Delay' },
-  Inward:       { icon: ArrowDownToLine, color: 'text-emerald-400', bg: 'bg-emerald-500/10', label: 'Inward' },
-  Outward:      { icon: ArrowUpFromLine, color: 'text-blue-400',    bg: 'bg-blue-500/10',    label: 'Outward' },
-  System:       { icon: Bell,            color: 'text-primary',     bg: 'bg-primary/10',     label: 'System' },
+  MissingODR: { icon: AlertTriangle, color: "text-red-400", bg: "bg-red-500/10", label: "Missing ODR" },
+  DuplicateODR: { icon: Copy, color: "text-orange-400", bg: "bg-orange-500/10", label: "Duplicate ODR" },
+  Arrival: { icon: ArrowDownToLine, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "Arrival" },
+  Departure: { icon: ArrowUpFromLine, color: "text-blue-400", bg: "bg-blue-500/10", label: "Departure" },
+  Delay: { icon: Clock, color: "text-amber-400", bg: "bg-amber-500/10", label: "Delay" },
+  NewRecord: { icon: Bell, color: "text-primary", bg: "bg-primary/10", label: "New Record" },
+  ODR: { icon: AlertTriangle, color: "text-amber-400", bg: "bg-amber-500/10", label: "ODR" },
+  MaturedIndent: { icon: Clock, color: "text-purple-400", bg: "bg-purple-500/10", label: "Matured Indent" },
+  Inward: { icon: ArrowDownToLine, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "Inward" },
+  Outward: { icon: ArrowUpFromLine, color: "text-blue-400", bg: "bg-blue-500/10", label: "Outward" },
+  System: { icon: Bell, color: "text-primary", bg: "bg-primary/10", label: "System" },
 };
 
-// Notification types that correspond to inward or outward movement
-const INWARD_TYPES  = ['Inward', 'Arrival'];
-const OUTWARD_TYPES = ['Outward', 'Departure'];
+const INWARD_TYPES = ["Inward", "Arrival"];
+const OUTWARD_TYPES = ["Outward", "Departure"];
+
+const DEFAULT_FILTERS = {
+  showInward: true,
+  showOutward: true,
+  showOther: true,
+  divisions: [],
+  states: [],
+  districts: [],
+  stations: [],
+  commodities: [],
+  rakeCmdts: [],
+};
 
 export default function Notifications() {
+  const { user } = useAuth();
+  const didLoadPersisted = useRef(false);
   const [notifs, setNotifs] = useState([]);
   const [movements, setMovements] = useState([]);
+  const [savedFilters, setSavedFilters] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [filters, setFilters] = useState(DEFAULT_FILTERS);
 
-  // Checkbox filters
-  const [showInward, setShowInward]   = useState(true);
-  const [showOutward, setShowOutward] = useState(true);
-  const [showOther, setShowOther]     = useState(true);
-
-  // Dropdown filters
-  const [filterDivision, setFilterDivision]       = useState('All');
-  const [selectedInwardStations, setSelectedInwardStations] = useState([]);
-  const [selectedOutwardStations, setSelectedOutwardStations] = useState([]);
-  const [filterComm, setFilterComm]             = useState('All');
-  const [filterRakeCmdt, setFilterRakeCmdt]     = useState('All');
-
-  useEffect(() => { loadData(); }, []);
-
-  const loadData = async () => {
-    setLoading(true);
-    const [notifData, movData] = await Promise.all([
-      base44.entities.RailNotification.list('-created_date', 200),
-      base44.entities.FreightMovement.list('-created_date', 1000),
-    ]);
-    setNotifs(notifData);
-    setMovements(movData);
-    setLoading(false);
-  };
-
-  const markAllRead = async () => {
-    const unread = notifs.filter(n => !n.is_read);
-    await Promise.all(unread.map(n => base44.entities.RailNotification.update(n.id, { is_read: true })));
+  useEffect(() => {
     loadData();
-  };
+  }, [user?.id]);
 
-  const markRead = async (n) => {
-    if (n.is_read) return;
-    await base44.entities.RailNotification.update(n.id, { is_read: true });
-    setNotifs(prev => prev.map(x => x.id === n.id ? { ...x, is_read: true } : x));
-  };
+  useEffect(() => {
+    if (didLoadPersisted.current || !user?.id) return;
+    didLoadPersisted.current = true;
+    const persisted = readPersistentFilters(FILTER_SOURCE, user.id);
+    if (persisted) applyFilterState(persisted);
+  }, [user?.id]);
 
-  const deleteNotif = async (n) => {
-    await base44.entities.RailNotification.delete(n.id);
-    setNotifs(prev => prev.filter(x => x.id !== n.id));
-  };
-
-  // Derive station lists from actual movement data
-  const inwardStations  = ['All', ...new Set(movements.filter(r => r.movement_type === 'Inward').map(r => r.station_to).filter(Boolean)).values()].sort();
-  const outwardStations = ['All', ...new Set(movements.filter(r => r.movement_type === 'Outward').map(r => r.station_from).filter(Boolean)).values()].sort();
-  const divisions       = ['All', ...new Set(notifs.map(n => n.related_division).filter(Boolean)).values()].sort();
-
-  const commodities = ['All', ...new Set(movements.map(getCommVal).filter(Boolean))].sort();
-
-  const rakeSourceMovements = filterComm === 'All'
-    ? movements
-    : movements.filter((m) => getCommVal(m) === filterComm);
-
-  const rakeCmdts = [
-    'All',
-    ...new Set(rakeSourceMovements.map(getRakeCmdtVal).filter(Boolean))
-  ].sort();
-
-  const isInwardType  = (type) => INWARD_TYPES.includes(type);
-  const isOutwardType = (type) => OUTWARD_TYPES.includes(type);
-
-  const filtered = notifs.filter(n => {
-    // Checkbox filter
-    if (isInwardType(n.type)  && !showInward)  return false;
-    if (isOutwardType(n.type) && !showOutward) return false;
-    if (!isInwardType(n.type) && !isOutwardType(n.type) && !showOther) return false;
-
-    // Division filter
-    if (filterDivision !== 'All' && n.related_division !== filterDivision) return false;
-
-    // Station filters — match against the ODR number in the notification
-    if (isInwardType(n.type)) {
-      if (selectedInwardStations.length > 0) {
-        const relatedMovement = movements.find(m => m.odr_number === n.related_odr && m.movement_type === 'Inward');
-        if (!relatedMovement || !selectedInwardStations.includes(relatedMovement.station_to)) return false;
-      }
-    } else if (isOutwardType(n.type)) {
-      if (selectedOutwardStations.length > 0) {
-        const relatedMovement = movements.find(m => m.odr_number === n.related_odr && m.movement_type === 'Outward');
-        if (!relatedMovement || !selectedOutwardStations.includes(relatedMovement.station_from)) return false;
-      }
+  async function loadData() {
+    setLoading(true);
+    try {
+      const [notifData, movData, savedRows] = await Promise.all([
+        base44.entities.RailNotification.list("-created_date", 1000),
+        base44.entities.FreightMovement.list("-created_date", 50000),
+        user?.id
+          ? base44.entities.SavedFilter.filter({ user_id: user.id }, "-created_at", 100)
+          : Promise.resolve([]),
+      ]);
+      setNotifs(notifData || []);
+      setMovements(movData || []);
+      setSavedFilters((savedRows || []).filter((row) => row.source === SAVED_SOURCE));
+    } catch (error) {
+      console.error("[Notifications] load failed:", error);
+    } finally {
+      setLoading(false);
     }
+  }
 
-    // Commodity & Rake CMDT filters — match against related movements
-    if (filterComm !== 'All' || filterRakeCmdt !== 'All') {
-      const batchMovements = n.batch_id ? movements.filter(m => String(m.upload_batch_id) === String(n.batch_id)) : [];
-      const odrMovements = n.related_odr ? movements.filter(m => String(m.odr_number) === String(n.related_odr)) : [];
-      const relatedMovements = [...batchMovements, ...odrMovements];
-      
+  const movementIndexes = useMemo(() => {
+    const byOdr = new Map();
+    const byBatch = new Map();
+    movements.forEach((movement) => {
+      if (movement.odr_number) appendMap(byOdr, String(movement.odr_number), movement);
+      if (movement.upload_batch_id) appendMap(byBatch, String(movement.upload_batch_id), movement);
+    });
+    return { byOdr, byBatch };
+  }, [movements]);
+
+  const options = useMemo(() => {
+    const divisions = new Set();
+    const states = new Set();
+    const districts = new Set();
+    const stations = new Map();
+    const commodities = new Map();
+    const rakeCmdts = new Map();
+
+    const commodityScoped =
+      filters.commodities.length === 0
+        ? movements
+        : movements.filter((movement) => filters.commodities.includes(getCommodityCode(movement)));
+
+    movements.forEach((movement) => {
+      if (movement.division) divisions.add(movement.division);
+      for (const station of [movement.station_from, movement.station_to]) {
+        if (!station) continue;
+        stations.set(station, formatStationNameAndCode(station));
+        const meta = getStationMeta(station);
+        if (meta?.state) states.add(meta.state);
+        if (meta?.district) districts.add(meta.district);
+      }
+
+      const commodity = getCommodityCode(movement);
+      if (commodity) commodities.set(commodity, getCommodityDisplay(movement));
+
+    });
+
+    commodityScoped.forEach((movement) => {
+      const rakeCmdt = getRakeCmdtCode(movement);
+      if (rakeCmdt) rakeCmdts.set(rakeCmdt, getRakeCmdtDisplay(movement));
+    });
+
+    return {
+      divisions: [...divisions].sort().map((division) => ({
+        value: division,
+        label: `${getDivisionName(division)} (${division})`,
+        searchText: `${division} ${getDivisionName(division)}`,
+      })),
+      states: [...states].sort(),
+      districts: [...districts].sort(),
+      stations: mapOptions(stations),
+      commodities: mapOptions(commodities),
+      rakeCmdts: mapOptions(rakeCmdts),
+    };
+  }, [filters.commodities, movements]);
+
+  const filtered = useMemo(() => {
+    return notifs.filter((notification) => {
+      if (isInwardType(notification.type) && !filters.showInward) return false;
+      if (isOutwardType(notification.type) && !filters.showOutward) return false;
+      if (!isInwardType(notification.type) && !isOutwardType(notification.type) && !filters.showOther) return false;
+
+      if (!optionMatches(filters.divisions, notification.related_division || "")) {
+        return false;
+      }
+
+      const needsMovementMatch =
+        filters.states.length > 0 ||
+        filters.districts.length > 0 ||
+        filters.stations.length > 0 ||
+        filters.commodities.length > 0 ||
+        filters.rakeCmdts.length > 0;
+
+      if (!needsMovementMatch) return true;
+
+      const relatedMovements = getRelatedMovements(notification, movementIndexes);
       if (relatedMovements.length === 0) return false;
-      
-      if (filterComm !== 'All') {
-        const hasComm = relatedMovements.some(m => getCommVal(m) === filterComm);
-        if (!hasComm) return false;
-      }
-      
-      if (filterRakeCmdt !== 'All') {
-        const hasRake = relatedMovements.some(m => getRakeCmdtVal(m) === filterRakeCmdt);
-        if (!hasRake) return false;
-      }
-    }
 
-    return true;
-  });
+      return relatedMovements.some((movement) => movementMatchesFilters(movement, filters));
+    });
+  }, [filters, movementIndexes, notifs]);
 
-  const unreadCount = notifs.filter(n => !n.is_read).length;
+  const unreadCount = notifs.filter((notification) => !notification.is_read).length;
+  const hasActiveFilters =
+    filters.showInward !== true ||
+    filters.showOutward !== true ||
+    filters.showOther !== true ||
+    filters.divisions.length > 0 ||
+    filters.states.length > 0 ||
+    filters.districts.length > 0 ||
+    filters.stations.length > 0 ||
+    filters.commodities.length > 0 ||
+    filters.rakeCmdts.length > 0;
+
+  function setFilter(name, value) {
+    setFilters((prev) => ({ ...prev, [name]: value }));
+  }
+
+  function applyFilterState(nextFilters) {
+    setFilters({
+      showInward: nextFilters.showInward ?? true,
+      showOutward: nextFilters.showOutward ?? true,
+      showOther: nextFilters.showOther ?? true,
+      divisions: normalizeMultiValue(nextFilters.divisions ?? nextFilters.filterDivision),
+      states: normalizeMultiValue(nextFilters.states),
+      districts: normalizeMultiValue(nextFilters.districts),
+      stations: normalizeMultiValue(
+        nextFilters.stations ??
+          nextFilters.selectedStations ??
+          nextFilters.selectedInwardStations
+      ),
+      commodities: normalizeMultiValue(nextFilters.commodities ?? nextFilters.filterComm),
+      rakeCmdts: normalizeMultiValue(nextFilters.rakeCmdts ?? nextFilters.filterRakeCmdt),
+    });
+  }
+
+  async function saveCurrentFilter() {
+    if (!user?.id) return;
+    writePersistentFilters(FILTER_SOURCE, user.id, filters);
+    const saved = await base44.entities.SavedFilter.create({
+      user_id: user.id,
+      name: buildFilterName(filters),
+      source: SAVED_SOURCE,
+      filters,
+    });
+    setSavedFilters((prev) => [saved, ...prev]);
+  }
+
+  function clearFilters() {
+    setFilters(DEFAULT_FILTERS);
+    if (user?.id) clearPersistentFilters(FILTER_SOURCE, user.id);
+  }
+
+  async function markAllRead() {
+    const unread = notifs.filter((notification) => !notification.is_read);
+    await Promise.all(
+      unread.map((notification) =>
+        base44.entities.RailNotification.update(notification.id, { is_read: true })
+      )
+    );
+    await loadData();
+  }
+
+  async function markRead(notification) {
+    if (notification.is_read) return;
+    await base44.entities.RailNotification.update(notification.id, { is_read: true });
+    setNotifs((prev) =>
+      prev.map((item) =>
+        item.id === notification.id ? { ...item, is_read: true } : item
+      )
+    );
+  }
+
+  async function deleteNotification(notification) {
+    await base44.entities.RailNotification.delete(notification.id);
+    setNotifs((prev) => prev.filter((item) => item.id !== notification.id));
+  }
 
   return (
     <div className="p-6 space-y-5 animate-fade-in">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <Bell className="w-5 h-5 text-primary" />
+            <Bell className="h-5 w-5 text-primary" />
             <h1 className="text-2xl font-bold text-foreground">Notifications</h1>
             {unreadCount > 0 && (
-              <span className="px-2 py-0.5 rounded-full bg-destructive text-white text-xs font-bold">{unreadCount}</span>
+              <span className="rounded-full bg-destructive px-2 py-0.5 text-xs font-bold text-white">
+                {unreadCount}
+              </span>
             )}
           </div>
-          <p className="text-muted-foreground text-sm mt-1">Alerts, ODR comparisons, and system events</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Alerts, ODR comparisons, and system events
+          </p>
         </div>
         {unreadCount > 0 && (
-          <button onClick={markAllRead} className="flex items-center gap-2 text-sm text-primary hover:text-primary/80 transition-colors">
-            <CheckCheck className="w-4 h-4" />
+          <button
+            type="button"
+            onClick={markAllRead}
+            className="flex items-center gap-2 text-sm text-primary transition-colors hover:text-primary/80"
+          >
+            <CheckCheck className="h-4 w-4" />
             Mark all read
           </button>
         )}
       </div>
 
-      {/* Filters Panel */}
-      <div className="bg-card border border-border rounded-xl p-4 space-y-4">
-        {/* Row 1: Checkboxes */}
-        <div className="flex flex-wrap items-center gap-6">
-          <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Show</span>
-          <CheckboxFilter
-            checked={showInward}
-            onChange={setShowInward}
-            label="Inward / Arrival"
-            color="text-emerald-600"
-            bgColor="bg-emerald-500/10"
-            borderColor="border-emerald-500/30"
-          />
-          <CheckboxFilter
-            checked={showOutward}
-            onChange={setShowOutward}
-            label="Outward / Departure"
-            color="text-blue-600"
-            bgColor="bg-blue-500/10"
-            borderColor="border-blue-500/30"
-          />
-          <CheckboxFilter
-            checked={showOther}
-            onChange={setShowOther}
-            label="System / ODR Alerts"
-            color="text-amber-600"
-            bgColor="bg-amber-500/10"
-            borderColor="border-amber-500/30"
-          />
+      <div className="space-y-4 rounded-xl border border-border bg-card p-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Show</span>
+          <CheckboxFilter checked={filters.showInward} onChange={(value) => setFilter("showInward", value)} label="Inward / Arrival" color="text-emerald-600" bgColor="bg-emerald-500/10" borderColor="border-emerald-500/30" />
+          <CheckboxFilter checked={filters.showOutward} onChange={(value) => setFilter("showOutward", value)} label="Outward / Departure" color="text-blue-600" bgColor="bg-blue-500/10" borderColor="border-blue-500/30" />
+          <CheckboxFilter checked={filters.showOther} onChange={(value) => setFilter("showOther", value)} label="System / ODR Alerts" color="text-amber-600" bgColor="bg-amber-500/10" borderColor="border-amber-500/30" />
         </div>
 
-        {/* Row 2: Dropdowns */}
-        <div className="flex flex-wrap gap-3">
-          <DropdownFilter
-            value={filterDivision}
-            onChange={v => setFilterDivision(v)}
-            options={divisions}
-            placeholder="All Divisions"
-            renderOption={d => d === 'All' ? 'All Divisions' : `${getDivisionName(d)} (${d})`}
+        <div className="flex flex-wrap gap-2">
+          <MultiSelectFilter label="Division" selected={filters.divisions} onChange={(value) => setFilter("divisions", value)} options={options.divisions} placeholder="All Divisions" />
+          <MultiSelectFilter label="State" selected={filters.states} onChange={(value) => setFilter("states", value)} options={options.states} placeholder="All States" />
+          <MultiSelectFilter label="District" selected={filters.districts} onChange={(value) => setFilter("districts", value)} options={options.districts} placeholder="All Districts" />
+          <MultiSelectFilter label="Station" selected={filters.stations} onChange={(value) => setFilter("stations", value)} options={options.stations} placeholder="All Stations" />
+          <MultiSelectFilter
+            label="Commodity"
+            selected={filters.commodities}
+            onChange={(value) =>
+              setFilters((prev) => ({ ...prev, commodities: value, rakeCmdts: [] }))
+            }
+            options={options.commodities}
+            placeholder="All Commodities"
           />
-          {showInward && (
-            <MultiStationSelect
-              label="Inward Stations"
-              stations={inwardStations}
-              selected={selectedInwardStations}
-              onChange={setSelectedInwardStations}
-            />
-          )}
-          {showOutward && (
-            <MultiStationSelect
-              label="Outward Stations"
-              stations={outwardStations}
-              selected={selectedOutwardStations}
-              onChange={setSelectedOutwardStations}
-            />
-          )}
+          <MultiSelectFilter
+            label="Rake CMDT"
+            selected={filters.rakeCmdts}
+            onChange={(value) => setFilters((prev) => ({ ...prev, rakeCmdts: value }))}
+            options={options.rakeCmdts}
+            placeholder="All Rake CMDT"
+          />
 
-          <select
-            value={filterComm}
-            onChange={e => { setFilterComm(e.target.value); setFilterRakeCmdt('All'); }}
-            className="appearance-none bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer hover:border-primary/50 transition-colors"
-          >
-            <option value="All">All Commodities</option>
-            {commodities.filter(c => c !== 'All').map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-
-          <select
-            value={filterRakeCmdt}
-            onChange={e => setFilterRakeCmdt(e.target.value)}
-            className="appearance-none bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer hover:border-primary/50 transition-colors"
-          >
-            <option value="All">All Rake CMDT</option>
-            {rakeCmdts.filter(c => c !== 'All').map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-
-          {(filterDivision !== 'All' || selectedInwardStations.length > 0 || selectedOutwardStations.length > 0 || filterComm !== 'All' || filterRakeCmdt !== 'All') && (
-            <button
-              onClick={() => { setFilterDivision('All'); setSelectedInwardStations([]); setSelectedOutwardStations([]); setFilterComm('All'); setFilterRakeCmdt('All'); }}
-              className="px-3 py-2 text-xs text-destructive hover:bg-destructive/10 rounded-lg border border-destructive/30 transition-colors cursor-pointer"
+          {savedFilters.length > 0 && (
+            <select
+              value=""
+              onChange={(event) => {
+                const saved = savedFilters.find((item) => item.id === event.target.value);
+                if (saved?.filters) applyFilterState(saved.filters);
+              }}
+              className="rounded-lg border border-border bg-muted px-3 py-2 text-sm text-foreground outline-none"
             >
-              Clear Filters
+              <option value="">Apply Saved Filter</option>
+              {savedFilters.map((saved) => (
+                <option key={saved.id} value={saved.id}>
+                  {saved.name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          <button
+            type="button"
+            onClick={saveCurrentFilter}
+            className="inline-flex items-center gap-2 rounded-lg border border-primary/30 px-3 py-2 text-xs text-primary transition-colors hover:bg-primary/10"
+          >
+            <Save className="h-3.5 w-3.5" />
+            Save Filter
+          </button>
+
+          {hasActiveFilters && (
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="rounded-lg border border-destructive/30 px-3 py-2 text-xs text-destructive transition-colors hover:bg-destructive/10"
+            >
+              Clear Filter
             </button>
           )}
         </div>
 
-        {(selectedInwardStations.length > 0 || selectedOutwardStations.length > 0) && (
-          <div className="flex flex-wrap items-center gap-1.5 bg-muted/40 p-2.5 rounded-lg border border-border mt-2">
-            <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mr-1">Active Stations:</span>
-            {selectedInwardStations.map(s => (
-              <span key={`in-${s}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-600 font-medium">
-                To: {getStationName(s)} ({s})
-                <button onClick={() => setSelectedInwardStations(selectedInwardStations.filter(x => x !== s))} className="hover:text-destructive font-bold ml-0.5">&times;</button>
-              </span>
-            ))}
-            {selectedOutwardStations.map(s => (
-              <span key={`out-${s}`} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-xs text-blue-600 font-medium">
-                From: {getStationName(s)} ({s})
-                <button onClick={() => setSelectedOutwardStations(selectedOutwardStations.filter(x => x !== s))} className="hover:text-destructive font-bold ml-0.5">&times;</button>
+        {filters.stations.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-muted/40 p-2.5">
+            <span className="mr-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+              Active Stations:
+            </span>
+            {filters.stations.map((station) => (
+              <span key={station} className="inline-flex items-center gap-1 rounded border border-primary/20 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                {formatStationNameAndCode(station)}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setFilter(
+                      "stations",
+                      filters.stations.filter((item) => item !== station)
+                    )
+                  }
+                  className="ml-0.5 font-bold hover:text-destructive"
+                >
+                  x
+                </button>
               </span>
             ))}
           </div>
@@ -261,59 +385,79 @@ export default function Notifications() {
         </div>
       </div>
 
-      {/* Notifications List */}
       <div className="space-y-2">
         {loading ? (
-          [...Array(5)].map((_, i) => <div key={i} className="h-20 bg-muted rounded-xl animate-pulse" />)
+          [...Array(5)].map((_, index) => (
+            <div key={index} className="h-20 animate-pulse rounded-xl bg-muted" />
+          ))
         ) : filtered.length === 0 ? (
-          <div className="text-center py-16 text-muted-foreground">
-            <Bell className="w-10 h-10 mx-auto mb-3 opacity-30" />
+          <div className="py-16 text-center text-muted-foreground">
+            <Bell className="mx-auto mb-3 h-10 w-10 opacity-30" />
             <p className="text-sm">No notifications match your filters</p>
-            <p className="text-xs mt-1">Try adjusting the checkboxes or dropdowns above</p>
+            <p className="mt-1 text-xs">Try adjusting the saved filter set above</p>
           </div>
         ) : (
-          filtered.map(n => {
-            const config = TYPE_CONFIG[n.type] || TYPE_CONFIG.System;
+          filtered.map((notification) => {
+            const config = TYPE_CONFIG[notification.type] || TYPE_CONFIG.System;
             const IconComp = config.icon;
             return (
               <div
-                key={n.id}
-                onClick={() => markRead(n)}
-                className={`flex items-start gap-4 p-4 rounded-xl border transition-all cursor-pointer ${
-                  !n.is_read
-                    ? 'border-primary/20 bg-primary/5 hover:bg-primary/10'
-                    : 'border-border bg-card hover:bg-muted/30'
+                key={notification.id}
+                onClick={() => markRead(notification)}
+                className={`flex cursor-pointer items-start gap-4 rounded-xl border p-4 transition-all ${
+                  !notification.is_read
+                    ? "border-primary/20 bg-primary/5 hover:bg-primary/10"
+                    : "border-border bg-card hover:bg-muted/30"
                 }`}
               >
-                <div className={`w-9 h-9 rounded-lg ${config.bg} flex items-center justify-center flex-shrink-0 mt-0.5`}>
-                  <IconComp className={`w-4 h-4 ${config.color}`} />
+                <div className={`mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${config.bg}`}>
+                  <IconComp className={`h-4 w-4 ${config.color}`} />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-sm text-foreground">{n.title}</span>
-                    {!n.is_read && <span className="w-2 h-2 rounded-full bg-primary flex-shrink-0" />}
-                    <span className={`ml-auto text-xs px-2 py-0.5 rounded-full border ${
-                      n.severity === 'error'   ? 'bg-red-500/10 text-red-400 border-red-500/20' :
-                      n.severity === 'warning' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
-                      'bg-muted text-muted-foreground border-border'
-                    }`}>{n.severity || 'info'}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold text-foreground">{notification.title}</span>
+                    {!notification.is_read && <span className="h-2 w-2 flex-shrink-0 rounded-full bg-primary" />}
+                    <span className={`ml-auto rounded-full border px-2 py-0.5 text-xs ${
+                      notification.severity === "error"
+                        ? "border-red-500/20 bg-red-500/10 text-red-400"
+                        : notification.severity === "warning"
+                          ? "border-amber-500/20 bg-amber-500/10 text-amber-400"
+                          : "border-border bg-muted text-muted-foreground"
+                    }`}>
+                      {notification.severity || "info"}
+                    </span>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-1">{n.message}</p>
-                  <div className="flex items-center gap-3 mt-2 flex-wrap">
-                    {n.related_division && (
-                      <span className="text-xs bg-muted px-2 py-0.5 rounded border border-border text-muted-foreground">
-                        {getDivisionName(n.related_division)} ({n.related_division})
+                  <p className="mt-1 text-xs text-muted-foreground">{notification.message}</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-3">
+                    <span className="rounded border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                      {config.label}
+                    </span>
+                    {notification.related_division && (
+                      <span className="rounded border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                        {getDivisionName(notification.related_division)} ({notification.related_division})
                       </span>
                     )}
-                    {n.related_odr && <span className="text-xs text-muted-foreground font-mono">{n.related_odr}</span>}
-                    {n.created_date && <span className="text-xs text-muted-foreground">{new Date(n.created_date).toLocaleString('en-IN')}</span>}
+                    {notification.related_odr && (
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {notification.related_odr}
+                      </span>
+                    )}
+                    {notification.created_date && (
+                      <span className="text-xs text-muted-foreground">
+                        {new Date(notification.created_date).toLocaleString("en-IN")}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <button
-                  onClick={e => { e.stopPropagation(); deleteNotif(n); }}
-                  className="text-muted-foreground hover:text-red-400 transition-colors p-1 flex-shrink-0"
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    deleteNotification(notification);
+                  }}
+                  className="flex-shrink-0 p-1 text-muted-foreground transition-colors hover:text-red-400"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Trash2 className="h-3.5 w-3.5" />
                 </button>
               </div>
             );
@@ -326,159 +470,98 @@ export default function Notifications() {
 
 function CheckboxFilter({ checked, onChange, label, color, bgColor, borderColor }) {
   return (
-    <label className={`flex items-center gap-2.5 px-3 py-2 rounded-lg border cursor-pointer transition-all select-none ${
-      checked ? `${bgColor} ${borderColor}` : 'bg-muted border-border opacity-50'
+    <label className={`flex cursor-pointer select-none items-center gap-2.5 rounded-lg border px-3 py-2 transition-all ${
+      checked ? `${bgColor} ${borderColor}` : "border-border bg-muted opacity-50"
     }`}>
       <input
         type="checkbox"
         checked={checked}
-        onChange={e => onChange(e.target.checked)}
-        className="w-4 h-4 rounded accent-current cursor-pointer"
+        onChange={(event) => onChange(event.target.checked)}
+        className="h-4 w-4 cursor-pointer rounded accent-current"
       />
-      <span className={`text-xs font-medium ${checked ? color : 'text-muted-foreground'}`}>{label}</span>
+      <span className={`text-xs font-medium ${checked ? color : "text-muted-foreground"}`}>{label}</span>
     </label>
   );
 }
 
-function DropdownFilter({ value, onChange, options, renderOption }) {
+function appendMap(map, key, value) {
+  const rows = map.get(key) || [];
+  rows.push(value);
+  map.set(key, rows);
+}
+
+function getRelatedMovements(notification, indexes) {
+  const rows = [];
+  if (notification.related_odr) {
+    rows.push(...(indexes.byOdr.get(String(notification.related_odr)) || []));
+  }
+  if (notification.batch_id) {
+    rows.push(...(indexes.byBatch.get(String(notification.batch_id)) || []));
+  }
+  return [...new Map(rows.map((row) => [row.id, row])).values()];
+}
+
+function movementMatchesFilters(movement, filters) {
+  const stationCodes = [movement.station_from, movement.station_to].filter(Boolean);
+  const stationMetas = stationCodes.map((station) => getStationMeta(station)).filter(Boolean);
+  const states = new Set([
+    movement.from_state,
+    movement.to_state,
+    ...stationMetas.map((meta) => meta.state),
+  ].filter(Boolean));
+  const districts = new Set([
+    movement.from_district,
+    movement.to_district,
+    ...stationMetas.map((meta) => meta.district),
+  ].filter(Boolean));
+
   return (
-    <div className="relative">
-      <select
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        className="appearance-none bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 pr-8 outline-none cursor-pointer hover:border-primary/50 transition-colors"
-      >
-        {options.map(o => <option key={o} value={o}>{renderOption(o)}</option>)}
-      </select>
-      <ChevronDown className="w-3.5 h-3.5 text-muted-foreground absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-    </div>
+    (filters.states.length === 0 || filters.states.some((state) => states.has(state))) &&
+    (filters.districts.length === 0 || filters.districts.some((district) => districts.has(district))) &&
+    (filters.stations.length === 0 || filters.stations.some((station) => stationCodes.includes(station))) &&
+    optionMatches(filters.commodities, getCommodityCode(movement)) &&
+    optionMatches(filters.rakeCmdts, getRakeCmdtCode(movement))
   );
+}
+
+function isInwardType(type) {
+  return INWARD_TYPES.includes(type);
+}
+
+function isOutwardType(type) {
+  return OUTWARD_TYPES.includes(type);
 }
 
 function readRaw(record, ...keys) {
   for (const key of keys) {
     const value = record?.raw_data?.[key] ?? record?.[key];
-    if (value !== undefined && value !== null && String(value).trim() !== "")
-      return value;
+    if (value !== undefined && value !== null && String(value).trim() !== "") return value;
   }
   return "";
 }
 
-function getCommVal(record) {
-  return readRaw(record, "Product") || getCommodityName(record.commodity || record.commodity_code) || record.commodity || record.commodity_code || "";
+function getCommodityCode(record) {
+  return String(record.commodity_code || record.commodity || readRaw(record, "CMDT", "Commodity") || "").trim();
 }
 
-function getRakeCmdtVal(record) {
-  const code = record.rake_cmdt || record.rake_commodity_code || "";
-  if (code && !isWagonType(code)) return code;
-  const legacyCode = record.rake_type || "";
-  if (legacyCode && !isWagonType(legacyCode)) return legacyCode;
-  return "";
+function getCommodityDisplay(record) {
+  return record.commodity_name || readRaw(record, "CMDT", "Commodity", "Commodity Name") || record.commodity || record.commodity_code || "";
 }
 
-function MultiStationSelect({ label, stations, selected, onChange }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const containerRef = useRef(null);
+function mapOptions(map) {
+  return [...map.entries()]
+    .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
+    .map(([value, label]) => ({ value, label, searchText: `${label} ${value}` }));
+}
 
-  useEffect(() => {
-    function handleClickOutside(event) {
-      if (containerRef.current && !containerRef.current.contains(event.target)) {
-        setIsOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  const filteredStations = stations.filter(
-    (s) =>
-      s === "All" ||
-      s.toLowerCase().includes(search.toLowerCase()) ||
-      getStationName(s).toLowerCase().includes(search.toLowerCase())
-  );
-
-  const toggleStation = (station) => {
-    if (station === "All") {
-      onChange([]);
-      return;
-    }
-    if (selected.includes(station)) {
-      onChange(selected.filter((x) => x !== station));
-    } else {
-      onChange([...selected, station]);
-    }
-  };
-
-  return (
-    <div className="relative" ref={containerRef}>
-      <button
-        type="button"
-        onClick={() => setIsOpen(!isOpen)}
-        className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 pr-8 outline-none w-48 text-left flex items-center justify-between cursor-pointer hover:border-primary/50 transition-colors"
-      >
-        <span className="truncate">
-          {selected.length === 0
-            ? label
-            : `${selected.length} Station(s)`}
-        </span>
-        <ChevronDown className="w-4 h-4 ml-2 text-muted-foreground absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-      </button>
-
-      {isOpen && (
-        <div className="absolute right-0 z-50 mt-1 w-64 bg-card border border-border rounded-lg shadow-xl p-3 space-y-2">
-          <input
-            type="text"
-            placeholder="Search stations..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-background border border-border text-foreground text-xs rounded px-2 py-1.5 outline-none focus:border-primary"
-          />
-          <div className="flex justify-between text-[10px] text-primary font-bold px-1 pb-1 border-b border-border/40">
-            <button
-              type="button"
-              onClick={() => onChange([])}
-              className="hover:underline cursor-pointer"
-            >
-              Clear All
-            </button>
-            <button
-              type="button"
-              onClick={() => onChange(stations.filter((s) => s !== "All"))}
-              className="hover:underline cursor-pointer"
-            >
-              Select All
-            </button>
-          </div>
-          <div className="max-h-48 overflow-y-auto space-y-1">
-            {filteredStations.map((s) => {
-              if (s === "All") return null;
-              const isChecked = selected.includes(s);
-              return (
-                <label
-                  key={s}
-                  className="flex items-center gap-2 px-1.5 py-1 hover:bg-muted/50 rounded cursor-pointer text-xs select-none"
-                >
-                  <input
-                    type="checkbox"
-                    checked={isChecked}
-                    onChange={() => toggleStation(s)}
-                    className="rounded text-primary focus:ring-0 accent-primary cursor-pointer w-3.5 h-3.5"
-                  />
-                  <span className="truncate text-foreground">
-                    {getStationName(s)} ({s})
-                  </span>
-                </label>
-              );
-            })}
-            {filteredStations.length === 0 && (
-              <div className="text-[10px] text-muted-foreground text-center py-2">
-                No stations match search
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
+function buildFilterName(filters) {
+  const parts = [
+    ...filters.divisions,
+    ...filters.states,
+    ...filters.districts,
+    ...filters.stations,
+    ...filters.commodities,
+    ...filters.rakeCmdts,
+  ].filter(Boolean);
+  return parts.slice(0, 4).join(" + ") || "Notification Filter";
 }

@@ -1,26 +1,47 @@
-import { useState, useEffect, useRef } from 'react';
-import { base44 } from '@/api/base44Client';
-import { ArrowUpFromLine, ChevronDown } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { getCommodityColor, getStationName, getDivisionName, getCommodityName, getRakeTypeName } from '@/utils/railwayDictionary';
-import { getStationMeta } from '@/utils/stationMaster';
-import { isWagonType } from "@/utils/freightRecordFilters";
-import StatusBadge from '@/components/StatusBadge';
-import FreightDetailsModal from '@/components/FreightDetailsModal';
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUpFromLine, Save, Search } from "lucide-react";
+import { base44 } from "@/api/base44Client";
+import MultiSelectFilter from "@/components/MultiSelectFilter";
+import FreightDetailsModal from "@/components/FreightDetailsModal";
+import { useAuth } from "@/lib/AuthContext";
+import { getDivisionName } from "@/utils/railwayDictionary";
+import {
+  getBusinessRakeCmdtCode as getRakeCmdtCode,
+  getBusinessRakeCmdtDisplay as getRakeCmdtDisplay,
+} from "@/utils/freightRecordFilters";
+import { formatStationNameAndCode, getStationMeta } from "@/utils/stationMaster";
+import {
+  clearPersistentFilters,
+  hasSavedFilterValues,
+  normalizeMultiValue,
+  optionMatches,
+  readPersistentFilters,
+  writePersistentFilters,
+} from "@/utils/persistentFilters";
 
 const PER_PAGE = 25;
+const FILTER_SOURCE = "outwardMonitor";
+const SAVED_SOURCE = "Outward Monitor";
+
+const DEFAULT_FILTERS = {
+  search: "",
+  division: "All",
+  states: [],
+  districts: [],
+  stations: [],
+  commodities: [],
+  rakeCmdts: [],
+  fromDate: "",
+  toDate: "",
+};
 
 export default function OutwardMonitor() {
+  const { user } = useAuth();
+  const didLoadPersisted = useRef(false);
   const [allRecords, setAllRecords] = useState([]);
+  const [savedFilters, setSavedFilters] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filterDivision, setFilterDivision] = useState('All');
-  const [selectedStations, setSelectedStations] = useState([]);
-  const [filterState, setFilterState] = useState('All');
-  const [filterDistrict, setFilterDistrict] = useState('All');
-  const [filterComm, setFilterComm] = useState('All');
-  const [filterRakeCmdt, setFilterRakeCmdt] = useState('All');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [page, setPage] = useState(1);
 
@@ -28,243 +49,274 @@ export default function OutwardMonitor() {
     const load = async () => {
       setLoading(true);
       try {
-        // Use same data source as FreightTracker — load all records, then filter by movement_type
-        const data = await base44.entities.FreightMovement.list('-created_date', 2000);
-        const outwardOnly = (data || []).filter((r) => r.movement_type === 'Outward');
+        const data = await base44.entities.FreightMovement.list("-created_date", 50000);
+        const outwardOnly = (data || []).filter((record) => record.movement_type === "Outward");
         setAllRecords(outwardOnly);
-        console.log('[OutwardMonitor] loaded:', outwardOnly.length, 'outward records out of', (data || []).length, 'total');
-      } catch (e) {
-        console.error('[OutwardMonitor] load failed:', e);
+        if (user?.id) {
+          const rows = await base44.entities.SavedFilter.filter(
+            { user_id: user.id },
+            "-created_at",
+            100
+          );
+          setSavedFilters((rows || []).filter((row) => row.source === SAVED_SOURCE));
+        }
+      } catch (error) {
+        console.error("[OutwardMonitor] load failed:", error);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
     load();
-  }, []);
+  }, [user?.id]);
 
-  const getSourceStationMeta = (record) => getStationMeta(record?.station_from);
+  useEffect(() => {
+    if (didLoadPersisted.current || !user?.id) return;
+    didLoadPersisted.current = true;
+    const persisted = readPersistentFilters(FILTER_SOURCE, user.id);
+    if (persisted) applyFilterState(persisted);
+  }, [user?.id]);
 
-  const divisions = ['All', ...new Set(allRecords.map(r => r.division).filter(Boolean))].sort();
+  const options = useMemo(() => {
+    const scopedByDivision =
+      filters.division === "All"
+        ? allRecords
+        : allRecords.filter((record) => record.division === filters.division);
 
-  const stationFilteredByDiv = filterDivision === 'All' ? allRecords : allRecords.filter(r => r.division === filterDivision);
-  const stations = ['All', ...new Set(stationFilteredByDiv.map(r => r.station_from).filter(Boolean)).values()].sort();
+    const commodityScoped =
+      filters.commodities.length === 0
+        ? allRecords
+        : allRecords.filter((record) => filters.commodities.includes(getCommodityCode(record)));
 
-  const commodities = ['All', ...new Set(allRecords.map(getCommVal).filter(Boolean))].sort();
+    const states = new Set();
+    const districts = new Set();
+    const stations = new Map();
+    const commodities = new Map();
+    const rakeCmdts = new Map();
 
-  const rakeSourceRecords = filterComm === 'All'
-    ? allRecords
-    : allRecords.filter((r) => getCommVal(r) === filterComm);
+    scopedByDivision.forEach((record) => {
+      const state = getSourceState(record);
+      const district = getSourceDistrict(record);
+      if (state) states.add(state);
+      if (filters.states.length === 0 || filters.states.includes(state)) {
+        if (district) districts.add(district);
+      }
+      if (record.station_from) {
+        stations.set(record.station_from, formatStationNameAndCode(record.station_from));
+      }
+    });
 
-  const rakeCmdts = [
-    'All',
-    ...new Set(rakeSourceRecords.map(getRakeCmdtVal).filter(Boolean))
-  ].sort();
+    allRecords.forEach((record) => {
+      const commodityCode = getCommodityCode(record);
+      if (commodityCode) commodities.set(commodityCode, getCommodityDisplay(record));
 
-  const stateOptions = [...new Set(stationFilteredByDiv.map(r => getSourceStationMeta(r)?.state).filter(Boolean))].sort();
-  const districtOptions = [
-    ...new Set(
-      stationFilteredByDiv
-        .filter(r => filterState === 'All' || getSourceStationMeta(r)?.state === filterState)
-        .map(r => getSourceStationMeta(r)?.district)
-        .filter(Boolean)
-    ),
-  ].sort();
+    });
 
-  const filtered = allRecords.filter(r => {
-    const meta = getSourceStationMeta(r);
+    commodityScoped.forEach((record) => {
+      const rakeCmdt = getRakeCmdtCode(record);
+      if (rakeCmdt) rakeCmdts.set(rakeCmdt, getRakeCmdtDisplay(record));
+    });
 
-    const matchDiv = filterDivision === 'All' || r.division === filterDivision;
-    const matchState = filterState === 'All' || meta?.state === filterState;
-    const matchDistrict = filterDistrict === 'All' || meta?.district === filterDistrict;
-    const matchStation = selectedStations.length === 0 || selectedStations.includes(r.station_from);
+    return {
+      divisions: ["All", ...new Set(allRecords.map((record) => record.division).filter(Boolean))].sort(),
+      states: [...states].sort(),
+      districts: [...districts].sort(),
+      stations: mapOptions(stations),
+      commodities: mapOptions(commodities),
+      rakeCmdts: mapOptions(rakeCmdts),
+    };
+  }, [allRecords, filters.commodities, filters.division, filters.states]);
 
-    const matchDate = (() => {
-      const d = r.departure_date;
-      if (!d) return false;
-      if (fromDate && d < fromDate) return false;
-      if (toDate && d > toDate) return false;
-      return true;
-    })();
-    const matchDates = (!fromDate && !toDate) || matchDate;
+  const filtered = useMemo(() => {
+    const q = filters.search.trim().toLowerCase();
 
-    const matchComm = filterComm === 'All' || getCommVal(r) === filterComm;
-    const matchRakeCmdt = filterRakeCmdt === 'All' || getRakeCmdtVal(r) === filterRakeCmdt;
+    return allRecords.filter((record) => {
+      const departureDate = record.departure_date || "";
+      const state = getSourceState(record);
+      const district = getSourceDistrict(record);
 
-    return matchDiv && matchState && matchDistrict && matchStation && matchDates && matchComm && matchRakeCmdt;
-  });
+      const matchDates =
+        (!filters.fromDate || departureDate >= filters.fromDate) &&
+        (!filters.toDate || departureDate <= filters.toDate);
 
-  // Pagination
+      return (
+        recordMatchesSearch(record, q) &&
+        (filters.division === "All" || record.division === filters.division) &&
+        optionMatches(filters.states, state) &&
+        optionMatches(filters.districts, district) &&
+        optionMatches(filters.stations, record.station_from || "") &&
+        optionMatches(filters.commodities, getCommodityCode(record)) &&
+        optionMatches(filters.rakeCmdts, getRakeCmdtCode(record)) &&
+        matchDates
+      );
+    });
+  }, [allRecords, filters]);
+
   const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
   const pageRecords = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
-  const resetPage = () => setPage(1);
+  const hasActiveFilters = hasSavedFilterValues(filters);
 
-  const commMap = {};
-  filtered.forEach(r => { const c = getCommVal(r) || 'Unknown'; commMap[c] = (commMap[c] || 0) + 1; });
-  const commData = Object.entries(commMap).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+  function resetPage() {
+    setPage(1);
+  }
 
-  const divMap = {};
-  filtered.forEach(r => { const d = r.division || 'Unknown'; divMap[d] = (divMap[d] || 0) + 1; });
-  const divData = Object.entries(divMap).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
+  function setFilter(name, value) {
+    setFilters((prev) => ({ ...prev, [name]: value }));
+    resetPage();
+  }
 
-  const pending = filtered.filter(r => r.status === 'Pending').length;
-  const departed = filtered.filter(r => r.status === 'Departed').length;
-  const delayed = filtered.filter(r => r.status === 'Delayed').length;
+  function applyFilterState(nextFilters) {
+    setFilters({
+      search: nextFilters.search || "",
+      division: nextFilters.division || nextFilters.filterDivision || "All",
+      states: normalizeMultiValue(nextFilters.states ?? nextFilters.filterState),
+      districts: normalizeMultiValue(nextFilters.districts ?? nextFilters.filterDistrict),
+      stations: normalizeMultiValue(nextFilters.stations ?? nextFilters.selectedStations),
+      commodities: normalizeMultiValue(nextFilters.commodities ?? nextFilters.filterComm),
+      rakeCmdts: normalizeMultiValue(nextFilters.rakeCmdts ?? nextFilters.filterRakeCmdt),
+      fromDate: nextFilters.fromDate || "",
+      toDate: nextFilters.toDate || "",
+    });
+    resetPage();
+  }
+
+  async function saveCurrentFilter() {
+    if (!user?.id) return;
+    writePersistentFilters(FILTER_SOURCE, user.id, filters);
+    const saved = await base44.entities.SavedFilter.create({
+      user_id: user.id,
+      name: buildFilterName(filters),
+      source: SAVED_SOURCE,
+      filters,
+    });
+    setSavedFilters((prev) => [saved, ...prev]);
+  }
+
+  function clearFilters() {
+    setFilters(DEFAULT_FILTERS);
+    if (user?.id) clearPersistentFilters(FILTER_SOURCE, user.id);
+    resetPage();
+  }
 
   return (
     <div className="p-6 space-y-6 animate-fade-in">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
-            <ArrowUpFromLine className="w-5 h-5 text-blue-400" />
+            <ArrowUpFromLine className="h-5 w-5 text-blue-400" />
             <h1 className="text-2xl font-bold text-foreground">Outward Monitor</h1>
           </div>
-          <p className="text-muted-foreground text-sm mt-1">Freight dispatched from stations, plants &amp; yards</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Freight dispatched from stations, plants &amp; yards
+          </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+
+        <div className="flex flex-wrap items-end gap-2">
           <select
-            value={filterDivision}
-            onChange={e => {
-              setFilterDivision(e.target.value);
-              setSelectedStations([]);
-              setFilterState('All');
-              setFilterDistrict('All');
+            value={filters.division}
+            onChange={(event) => {
+              setFilters((prev) => ({
+                ...prev,
+                division: event.target.value,
+                states: [],
+                districts: [],
+                stations: [],
+              }));
               resetPage();
             }}
-            className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer"
+            className="rounded-lg border border-border bg-muted px-3 py-2 text-sm text-foreground outline-none"
           >
-            {divisions.map(d => <option key={d} value={d}>{d === 'All' ? 'All Divisions' : `${getDivisionName(d)} (${d})`}</option>)}
+            {options.divisions.map((division) => (
+              <option key={division} value={division}>
+                {division === "All" ? "All Divisions" : `${getDivisionName(division)} (${division})`}
+              </option>
+            ))}
           </select>
 
-          <div className="flex flex-wrap gap-2 items-end">
-            <div className="flex flex-col">
-              <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1">From Date</label>
-              <input type="date" value={fromDate} onChange={e => { setFromDate(e.target.value); resetPage(); }} className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer" />
-            </div>
+          <DateInput label="From Date" value={filters.fromDate} onChange={(value) => setFilter("fromDate", value)} />
+          <DateInput label="To Date" value={filters.toDate} onChange={(value) => setFilter("toDate", value)} />
 
-            <div className="flex flex-col">
-              <label className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1">To Date</label>
-              <input type="date" value={toDate} onChange={e => { setToDate(e.target.value); resetPage(); }} className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer" />
-            </div>
+          <MultiSelectFilter label="State" selected={filters.states} onChange={(value) => setFilter("states", value)} options={options.states} placeholder="All States" />
+          <MultiSelectFilter label="District" selected={filters.districts} onChange={(value) => setFilter("districts", value)} options={options.districts} placeholder="All Districts" />
+          <MultiSelectFilter label="Station" selected={filters.stations} onChange={(value) => setFilter("stations", value)} options={options.stations} placeholder="All Stations" align="right" />
+          <MultiSelectFilter
+            label="Commodity"
+            selected={filters.commodities}
+            onChange={(value) => {
+              setFilters((prev) => ({ ...prev, commodities: value, rakeCmdts: [] }));
+              resetPage();
+            }}
+            options={options.commodities}
+            placeholder="All Commodities"
+          />
+          <MultiSelectFilter label="Rake CMDT" selected={filters.rakeCmdts} onChange={(value) => {
+            setFilters((prev) => ({ ...prev, rakeCmdts: value }));
+            resetPage();
+          }} options={options.rakeCmdts} placeholder="All Rake CMDT" />
 
+          {savedFilters.length > 0 && (
             <select
-              value={filterState}
-              onChange={e => {
-                setFilterState(e.target.value);
-                setFilterDistrict('All');
-                setSelectedStations([]);
-                resetPage();
+              value=""
+              onChange={(event) => {
+                const saved = savedFilters.find((item) => item.id === event.target.value);
+                if (saved?.filters) applyFilterState(saved.filters);
               }}
-              className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer"
+              className="rounded-lg border border-border bg-muted px-3 py-2 text-sm text-foreground outline-none"
             >
-              <option value="All">All States</option>
-              {stateOptions.map(s => <option key={s} value={s}>{s}</option>)}
+              <option value="">Apply Saved Filter</option>
+              {savedFilters.map((saved) => (
+                <option key={saved.id} value={saved.id}>
+                  {saved.name}
+                </option>
+              ))}
             </select>
+          )}
 
-            <select
-              value={filterDistrict}
-              onChange={e => {
-                setFilterDistrict(e.target.value);
-                setSelectedStations([]);
-                resetPage();
-              }}
-              className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer"
-            >
-              <option value="All">All Districts</option>
-              {districtOptions.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
+          <button
+            type="button"
+            onClick={saveCurrentFilter}
+            className="inline-flex items-center gap-2 rounded-lg border border-primary/30 px-3 py-2 text-xs text-primary transition-colors hover:bg-primary/10"
+          >
+            <Save className="h-3.5 w-3.5" />
+            Save Filter
+          </button>
 
-            <MultiStationSelect label="Select Stations" stations={stations} selected={selectedStations} onChange={(v) => { setSelectedStations(v); resetPage(); }} />
-          </div>
-
-          <select value={filterComm} onChange={e => { setFilterComm(e.target.value); setFilterRakeCmdt('All'); resetPage(); }} className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer">
-            <option value="All">All Commodities</option>
-            {commodities.filter(c => c !== 'All').map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-
-          <select value={filterRakeCmdt} onChange={e => { setFilterRakeCmdt(e.target.value); resetPage(); }} className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 outline-none cursor-pointer">
-            <option value="All">All Rake CMDT</option>
-            {rakeCmdts.filter(c => c !== 'All').map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-
-          {(filterDivision !== 'All' || filterState !== 'All' || filterDistrict !== 'All' || selectedStations.length > 0 || filterRakeCmdt !== 'All' || filterComm !== 'All' || fromDate || toDate) && (
+          {hasActiveFilters && (
             <button
-              onClick={() => {
-                setFilterDivision('All');
-                setSelectedStations([]);
-                setFilterState('All');
-                setFilterDistrict('All');
-                setFilterRakeCmdt('All');
-                setFilterComm('All');
-                setFromDate('');
-                setToDate('');
-                resetPage();
-              }}
-              className="px-3 py-2 text-xs text-destructive hover:bg-destructive/10 rounded-lg border border-destructive/30 transition-colors cursor-pointer"
-            >Clear Filters</button>
+              type="button"
+              onClick={clearFilters}
+              className="rounded-lg border border-destructive/30 px-3 py-2 text-xs text-destructive transition-colors hover:bg-destructive/10"
+            >
+              Clear Filter
+            </button>
           )}
         </div>
       </div>
 
-      {selectedStations.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1.5 bg-muted/40 p-2.5 rounded-lg border border-border">
-          <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mr-1">Active Stations:</span>
-          {selectedStations.map(s => (
-            <span key={s} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-primary/10 border border-primary/20 text-xs text-primary font-medium">
-              {getStationName(s)} ({s})
-              <button onClick={() => setSelectedStations(selectedStations.filter(x => x !== s))} className="hover:text-destructive font-bold ml-0.5">&times;</button>
-            </span>
-          ))}
-        </div>
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2">
+        <Search className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+        <input
+          value={filters.search}
+          onChange={(event) => setFilter("search", event.target.value)}
+          placeholder="Search FNR, station, division, commodity, company..."
+          className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+        />
+      </div>
+
+      {filters.stations.length > 0 && (
+        <ActiveStationChips
+          label="Active Stations"
+          stations={filters.stations}
+          onRemove={(station) =>
+            setFilter(
+              "stations",
+              filters.stations.filter((item) => item !== station)
+            )
+          }
+        />
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {[
-          { label: 'Total Outward', value: filtered.length, color: 'text-blue-400' },
-          { label: 'Pending Dispatch', value: pending, color: 'text-amber-400' },
-          { label: 'Departed', value: departed, color: 'text-blue-400' },
-          { label: 'Delayed', value: delayed, color: 'text-red-400' },
-        ].map(c => (
-          <div key={c.label} className="bg-card border border-border rounded-xl p-4">
-            <div className={`text-3xl font-bold ${c.color}`}>{loading ? '—' : c.value}</div>
-            <div className="text-sm text-muted-foreground mt-1">{c.label}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-card border border-border rounded-xl p-5">
-          <h3 className="font-semibold text-foreground mb-4">Outward by Commodity</h3>
-          {commData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={commData} layout="vertical" barSize={16}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
-                <XAxis type="number" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis type="category" dataKey="name" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} axisLine={false} tickLine={false} width={90} />
-                <Tooltip contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8 }} />
-                <Bar dataKey="count" radius={[0, 4, 4, 0]}>
-                  {commData.map((entry, i) => <Cell key={i} fill={getCommodityColor(entry.name)} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <EmptyState />}
-        </div>
-        <div className="bg-card border border-border rounded-xl p-5">
-          <h3 className="font-semibold text-foreground mb-4">Outward by Division</h3>
-          {divData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={200}>
-              <BarChart data={divData} barSize={24}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                <XAxis dataKey="name" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={{ background: 'hsl(var(--card))', border: '1px solid hsl(var(--border))', borderRadius: 8 }} />
-                <Bar dataKey="count" fill="#3B82F6" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : <EmptyState />}
-        </div>
-      </div>
-
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="px-5 py-3 border-b border-border flex items-center justify-between">
+      <div className="overflow-hidden rounded-xl border border-border bg-card">
+        <div className="flex items-center justify-between border-b border-border px-5 py-3">
           <h3 className="font-semibold text-foreground">Outward Records</h3>
           <span className="text-xs text-muted-foreground">
             {filtered.length} records{filtered.length !== allRecords.length && ` (filtered from ${allRecords.length})`}
@@ -274,176 +326,215 @@ export default function OutwardMonitor() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40">
-                {['ODR No.', 'Division', 'From Station (Dispatch)', 'To Station', 'Commodity', 'Rake CMDT', 'Rake Type', 'Wagons', 'Departure Date', 'Status'].map(h => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground whitespace-nowrap">{h}</th>
+                {[
+                  "Rake Outward / FNR",
+                  "Source Station",
+                  "District (Source)",
+                  "State (Source)",
+                  "Company",
+                  "Product",
+                  "Rake CMDT",
+                  "Wagons",
+                  "Destination Station",
+                  "Departure Date",
+                  "Arrival Date & Time",
+                ].map((header) => (
+                  <th key={header} className="whitespace-nowrap px-4 py-3 text-left text-xs font-semibold text-muted-foreground">
+                    {header}
+                  </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {loading ? [...Array(5)].map((_, i) => (
-                <tr key={i} className="border-b border-border/50">
-                  {[...Array(10)].map((_, j) => <td key={j} className="px-4 py-3"><div className="h-4 bg-muted rounded animate-pulse" /></td>)}
+              {loading ? (
+                [...Array(5)].map((_, row) => (
+                  <tr key={row} className="border-b border-border/50">
+                    {[...Array(11)].map((__, col) => (
+                      <td key={col} className="px-4 py-3">
+                        <div className="h-4 animate-pulse rounded bg-muted" />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              ) : pageRecords.length === 0 ? (
+                <tr>
+                  <td colSpan={11} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                    No outward records.
+                  </td>
                 </tr>
-              )) : pageRecords.length === 0 ? (
-                <tr><td colSpan={10} className="px-4 py-10 text-center text-sm text-muted-foreground">No outward records found.</td></tr>
-              ) : pageRecords.map(r => (
-                <tr key={r.id} onClick={() => setSelectedRecord(r)} className="cursor-pointer border-b border-border/50 hover:bg-muted/30 transition-colors">
-                  <td className="px-4 py-3 font-mono text-xs text-primary font-medium">{r.odr_number}</td>
-                  <td className="px-4 py-3">
-                    <div className="text-xs font-medium text-foreground">{getDivisionName(r.division)}</div>
-                    <div className="text-[10px] text-muted-foreground font-mono">{r.division || '—'}</div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="text-xs font-medium text-blue-700">{getStationName(r.station_from)}</div>
-                    <div className="text-[10px] text-muted-foreground font-mono">{r.station_from || '—'}</div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="text-xs font-medium text-muted-foreground">{getStationName(r.station_to)}</div>
-                    <div className="text-[10px] text-muted-foreground font-mono">{r.station_to || '—'}</div>
-                  </td>
-                  <td className="px-4 py-3 text-foreground text-xs">{getCommVal(r) || '—'}</td>
-                  <td className="px-4 py-3 text-foreground text-xs">{getRakeCmdtVal(r) || '—'}</td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">{getRakeTypeName(getWagonTypeVal(r)) || getWagonTypeVal(r) || '—'}</td>
-                  <td className="px-4 py-3 text-center text-foreground text-xs">{r.wagons || '—'}</td>
-                  <td className="px-4 py-3 text-xs text-muted-foreground">{r.departure_date || '—'}</td>
-                  <td className="px-4 py-3"><StatusBadge status={r.status} /></td>
-                </tr>
-              ))}
+              ) : (
+                pageRecords.map((record) => (
+                  <tr key={record.id} onClick={() => setSelectedRecord(record)} className="cursor-pointer border-b border-border/50 transition-colors hover:bg-muted/30">
+                    <td className="px-4 py-3 font-mono text-xs font-medium text-primary">{getFnr(record)}</td>
+                    <td className="px-4 py-3 text-xs font-medium text-blue-700">{formatStationNameAndCode(record.station_from)}</td>
+                    <td className="px-4 py-3 text-xs text-foreground">{getSourceDistrict(record) || "-"}</td>
+                    <td className="px-4 py-3 text-xs text-foreground">{getSourceState(record) || "-"}</td>
+                    <td className="px-4 py-3 text-xs text-foreground">{getCompanyDisplay(record) || "-"}</td>
+                    <td className="px-4 py-3 text-xs text-foreground">{getProductDisplay(record) || "-"}</td>
+                    <td className="px-4 py-3 text-xs text-foreground">{getRakeCmdtDisplay(record) || "-"}</td>
+                    <td className="px-4 py-3 text-center text-xs text-foreground">{record.wagons || "-"}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatStationNameAndCode(record.station_to)}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatDateTime(record.departure_date, readRaw(record, "Departure Time", "Time")) || "-"}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatDateTime(record.arrival_date, readRaw(record, "Arrival Time", "UpdatedTime")) || "-"}</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
 
-        {/* Pagination — same style as FreightTracker */}
         {!loading && filtered.length > 0 && totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t border-border bg-muted/30">
-            <span className="text-xs text-muted-foreground">
-              Page {page} of {totalPages} &mdash; {filtered.length} records
-            </span>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setPage(1)}
-                disabled={page === 1}
-                className="px-2 py-1 text-xs rounded bg-muted hover:bg-muted/80 disabled:opacity-40 text-foreground border border-border"
-              >First</button>
-              <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page === 1}
-                className="px-3 py-1 text-xs rounded bg-muted hover:bg-muted/80 disabled:opacity-40 text-foreground border border-border"
-              >Prev</button>
-
-              {/* Page number buttons */}
-              {Array.from({ length: totalPages }, (_, i) => i + 1)
-                .filter((p) => p === 1 || p === totalPages || Math.abs(p - page) <= 2)
-                .reduce((acc, p, idx, arr) => {
-                  if (idx > 0 && p - arr[idx - 1] > 1) acc.push('...');
-                  acc.push(p);
-                  return acc;
-                }, [])
-                .map((item, idx) =>
-                  item === '...' ? (
-                    <span key={`ellipsis-${idx}`} className="px-2 py-1 text-xs text-muted-foreground">…</span>
-                  ) : (
-                    <button
-                      key={item}
-                      onClick={() => setPage(item)}
-                      className={`px-3 py-1 text-xs rounded border ${page === item ? 'bg-primary text-primary-foreground border-primary' : 'bg-muted hover:bg-muted/80 text-foreground border-border'}`}
-                    >{item}</button>
-                  )
-                )}
-
-              <button
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                disabled={page === totalPages}
-                className="px-3 py-1 text-xs rounded bg-muted hover:bg-muted/80 disabled:opacity-40 text-foreground border border-border"
-              >Next</button>
-              <button
-                onClick={() => setPage(totalPages)}
-                disabled={page === totalPages}
-                className="px-2 py-1 text-xs rounded bg-muted hover:bg-muted/80 disabled:opacity-40 text-foreground border border-border"
-              >Last</button>
-            </div>
-          </div>
+          <Pagination page={page} totalPages={totalPages} totalRecords={filtered.length} onPage={setPage} />
         )}
       </div>
+
       <FreightDetailsModal record={selectedRecord} onClose={() => setSelectedRecord(null)} />
     </div>
   );
 }
 
-function EmptyState() { return <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">No data available</div>; }
+function DateInput({ label, value, onChange }) {
+  return (
+    <label className="flex flex-col">
+      <span className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{label}</span>
+      <input
+        type="date"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="rounded-lg border border-border bg-muted px-3 py-2 text-sm text-foreground outline-none"
+      />
+    </label>
+  );
+}
+
+function ActiveStationChips({ label, stations, onRemove }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-muted/40 p-2.5">
+      <span className="mr-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{label}:</span>
+      {stations.map((station) => (
+        <span key={station} className="inline-flex items-center gap-1 rounded border border-primary/20 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+          {formatStationNameAndCode(station)}
+          <button type="button" onClick={() => onRemove(station)} className="ml-0.5 font-bold hover:text-destructive">x</button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function Pagination({ page, totalPages, totalRecords, onPage }) {
+  return (
+    <div className="flex items-center justify-between border-t border-border bg-muted/30 px-4 py-3">
+      <span className="text-xs text-muted-foreground">
+        Page {page} of {totalPages} - {totalRecords} records
+      </span>
+      <div className="flex gap-2">
+        <PageButton onClick={() => onPage(1)} disabled={page === 1}>First</PageButton>
+        <PageButton onClick={() => onPage((value) => Math.max(1, value - 1))} disabled={page === 1}>Prev</PageButton>
+        <PageButton onClick={() => onPage((value) => Math.min(totalPages, value + 1))} disabled={page === totalPages}>Next</PageButton>
+        <PageButton onClick={() => onPage(totalPages)} disabled={page === totalPages}>Last</PageButton>
+      </div>
+    </div>
+  );
+}
+
+function PageButton({ children, onClick, disabled }) {
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} className="rounded border border-border bg-muted px-3 py-1 text-xs text-foreground hover:bg-muted/80 disabled:opacity-40">
+      {children}
+    </button>
+  );
+}
+
+function recordMatchesSearch(record, query) {
+  if (!query) return true;
+  return [
+    getFnr(record),
+    record.division,
+    record.station_from,
+    record.station_to,
+    getSourceState(record),
+    getSourceDistrict(record),
+    getCompanyDisplay(record),
+    getProductDisplay(record),
+    getCommodityDisplay(record),
+    getRakeCmdtDisplay(record),
+  ]
+    .filter(Boolean)
+    .some((value) => String(value).toLowerCase().includes(query));
+}
+
+function mapOptions(map) {
+  return [...map.entries()]
+    .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
+    .map(([value, label]) => ({ value, label, searchText: `${label} ${value}` }));
+}
 
 function readRaw(record, ...keys) {
   for (const key of keys) {
     const value = record?.raw_data?.[key] ?? record?.[key];
-    if (value !== undefined && value !== null && String(value).trim() !== "")
-      return value;
+    if (value !== undefined && value !== null && String(value).trim() !== "") return value;
   }
   return "";
 }
 
-function getCommVal(record) {
-  return readRaw(record, "Product") || getCommodityName(record.commodity || record.commodity_code) || record.commodity || record.commodity_code || "";
+function getCommodityCode(record) {
+  return String(record.commodity_code || record.commodity || readRaw(record, "CMDT", "Commodity") || "").trim();
 }
 
-function getRakeCmdtVal(record) {
-  const code = record.rake_cmdt || record.rake_commodity_code || "";
-  if (code && !isWagonType(code)) return code;
-  const legacyCode = record.rake_type || "";
-  if (legacyCode && !isWagonType(legacyCode)) return legacyCode;
-  return "";
+function getCommodityDisplay(record) {
+  return record.commodity_name || readRaw(record, "CMDT", "Commodity", "Commodity Name") || record.commodity || record.commodity_code || "";
 }
 
-// Helper to extract clean Wagon/Rake Type
-function getWagonTypeVal(record) {
-  const code = record.rake_type || "";
-  if (code && isWagonType(code)) return code;
-  return "";
-}
-
-function MultiStationSelect({ label, stations, selected, onChange }) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [search, setSearch] = useState('');
-  const containerRef = useRef(null);
-
-  useEffect(() => {
-    function handleClickOutside(event) { if (containerRef.current && !containerRef.current.contains(event.target)) setIsOpen(false); }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  const filteredStations = stations.filter(s => s === 'All' || s.toLowerCase().includes(search.toLowerCase()) || getStationName(s).toLowerCase().includes(search.toLowerCase()));
-  const toggleStation = (station) => {
-    if (station === 'All') { onChange([]); return; }
-    if (selected.includes(station)) onChange(selected.filter((x) => x !== station));
-    else onChange([...selected, station]);
-  };
-
+function getCompanyDisplay(record) {
   return (
-    <div className="relative" ref={containerRef}>
-      <button type="button" onClick={() => setIsOpen(!isOpen)} className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2 pr-8 outline-none w-48 text-left flex items-center justify-between cursor-pointer hover:border-primary/50 transition-colors">
-        <span className="truncate">{selected.length === 0 ? label : `${selected.length} Station(s)`}</span>
-        <ChevronDown className="w-4 h-4 ml-2 text-muted-foreground absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-      </button>
-      {isOpen && (
-        <div className="absolute right-0 z-50 mt-1 w-64 bg-card border border-border rounded-lg shadow-xl p-3 space-y-2">
-          <input type="text" placeholder="Search stations..." value={search} onChange={(e) => setSearch(e.target.value)} className="w-full bg-background border border-border text-foreground text-xs rounded px-2 py-1.5 outline-none focus:border-primary" />
-          <div className="flex justify-between text-[10px] text-primary font-bold px-1 pb-1 border-b border-border/40">
-            <button type="button" onClick={() => onChange([])} className="hover:underline cursor-pointer">Clear All</button>
-            <button type="button" onClick={() => onChange(stations.filter((s) => s !== 'All'))} className="hover:underline cursor-pointer">Select All</button>
-          </div>
-          <div className="max-h-48 overflow-y-auto space-y-1">
-            {filteredStations.map((s) => {
-              if (s === 'All') return null;
-              return (
-                <label key={s} className="flex items-center gap-2 px-1.5 py-1 hover:bg-muted/50 rounded cursor-pointer text-xs select-none">
-                  <input type="checkbox" checked={selected.includes(s)} onChange={() => toggleStation(s)} className="rounded text-primary focus:ring-0 accent-primary cursor-pointer w-3.5 h-3.5" />
-                  <span className="truncate text-foreground">{getStationName(s)} ({s})</span>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      )}
-    </div>
+    record.company_name ||
+    record.company_full_name ||
+    record.company ||
+    record.company_code ||
+    readRaw(record, "Company", "Company Name", "CompanyName", "CNSR", "cnsr", "Consignor", "Consignor Code", "Consignor Name") ||
+    ""
   );
+}
+
+function getProductDisplay(record) {
+  return (
+    record.product_name ||
+    record.product_code ||
+    record.product ||
+    readRaw(record, "Product", "Product Name", "ProductName", "Product Code", "ProductCode") ||
+    ""
+  );
+}
+
+function getSourceState(record) {
+  return record.from_state || readRaw(record, "State (Source)", "State Source", "StateSource") || getStationMeta(record.station_from)?.state || "";
+}
+
+function getSourceDistrict(record) {
+  return record.from_district || readRaw(record, "District (Source)", "District Source", "DistrictSource") || getStationMeta(record.station_from)?.district || "";
+}
+
+function getFnr(record) {
+  return readRaw(record, "FNR", "FNR No", "FNR Number") || record.fnr || record.odr_number || "";
+}
+
+function formatDateTime(date, time) {
+  const dateText = String(date || "").trim();
+  const timeText = String(time || "").trim();
+  if (!dateText) return timeText;
+  if (!timeText || dateText.includes(timeText)) return dateText;
+  return `${dateText} ${timeText}`;
+}
+
+function buildFilterName(filters) {
+  const parts = [
+    filters.search,
+    filters.division !== "All" ? filters.division : "",
+    ...filters.states,
+    ...filters.districts,
+    ...filters.stations,
+    ...filters.commodities,
+    ...filters.rakeCmdts,
+  ].filter(Boolean);
+  return parts.slice(0, 4).join(" + ") || "Outward Monitor Filter";
 }

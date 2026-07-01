@@ -2,6 +2,7 @@
 // This file must be the single entry point for ALL RailNotification creation.
 
 import { createRecord } from "../storage.js";
+import { dispatchNotification } from "./providers.js";
 
 /**
  * Dedup key components required by spec:
@@ -107,6 +108,18 @@ export async function createNotification({
     related_division,
     batch_id,
     ...data,
+  });
+
+  await dispatchNotification(railNotification, {
+    movement_reference: dedup.movement_reference,
+    station_code: dedup.station_code,
+    notification_type: normalized_notification_type,
+    movement: data?.movement || data?.record || null,
+  }).catch((error) => {
+    console.error("[NotificationDelivery] dispatch failed", {
+      notification_id: railNotification?.id,
+      error: error?.message,
+    });
   });
 
   // Create notification_history entry.

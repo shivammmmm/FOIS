@@ -169,6 +169,32 @@ export const apiClient = {
     deleteDistrict: (id) => apiClient.masters.delete("district_master", id),
   },
 
+  masterCatalog: {
+    list: (master, { search = "", offset = 0, limit = 25 } = {}) => {
+      const params = new URLSearchParams();
+      if (search) params.set("search", search);
+      if (typeof offset === "number") params.set("offset", String(offset));
+      if (typeof limit === "number") params.set("limit", String(limit));
+
+      const query = params.toString();
+      return request(`/api/masters/catalog/${encodeURIComponent(master)}${query ? `?${query}` : ""}`);
+    },
+    create: (master, payload) =>
+      request(`/api/masters/catalog/${encodeURIComponent(master)}`, {
+        method: "POST",
+        body: JSON.stringify(payload || {}),
+      }),
+    update: (master, id, payload) =>
+      request(`/api/masters/catalog/${encodeURIComponent(master)}/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        body: JSON.stringify(payload || {}),
+      }),
+    delete: (master, id) =>
+      request(`/api/masters/catalog/${encodeURIComponent(master)}/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
+  },
+
   stationMaster: {
     list: ({ search, offset, limit } = {}) => {
       const params = new URLSearchParams();
@@ -214,6 +240,18 @@ export const apiClient = {
         request("/api/admin/uploads/excel", {
           method: "POST",
           body: JSON.stringify({ fileName, fileType, fileBase64 }),
+        }),
+    },
+    uploadHistory: {
+      list: ({ limit = 100 } = {}) => {
+        const params = new URLSearchParams();
+        if (typeof limit === "number") params.set("limit", String(limit));
+        const query = params.toString();
+        return request(`/api/admin/upload-history${query ? `?${query}` : ""}`);
+      },
+      delete: (id) =>
+        request(`/api/admin/upload-history/${encodeURIComponent(id)}`, {
+          method: "DELETE",
         }),
     },
     storageCounts: () => request("/api/admin/storage/counts"),

@@ -52,9 +52,9 @@ export default function Analytics() {
   movements.forEach(m => { const s = m.status || 'Unknown'; statusMap[s] = (statusMap[s] || 0) + 1; });
   const statusData = Object.entries(statusMap).map(([name, value]) => ({ name, value }));
 
-  // Rake type
+  // Rake CMDT
   const rakeMap = {};
-  movements.forEach(m => { const r = m.rake_type || 'Unknown'; rakeMap[r] = (rakeMap[r] || 0) + 1; });
+  movements.forEach(m => { const r = m.rake_commodity_code || m.rake_cmdt || 'Unknown'; rakeMap[r] = (rakeMap[r] || 0) + 1; });
   const rakeData = Object.entries(rakeMap).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 8);
 
   // ODR vs Indent comparison
@@ -164,9 +164,9 @@ export default function Analytics() {
         </div>
       </div>
 
-      {/* Rake type chart */}
+      {/* Rake CMDT chart */}
       <div className="bg-card border border-border rounded-xl p-5">
-        <h3 className="font-semibold text-foreground mb-4">Rake Type Usage</h3>
+        <h3 className="font-semibold text-foreground mb-4">Rake CMDT Usage</h3>
         {rakeData.length > 0 ? (
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={rakeData} barSize={32}>

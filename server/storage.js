@@ -8,6 +8,12 @@ import {
   updateRecord as jsonUpdateRecord,
 } from "./entityStore.js";
 import { readDb, writeDb } from "./db.js";
+import {
+  ensureCommodityCatalogTable,
+  ensureGenericMasterTable,
+  ensureMasterCatalogSchema,
+  ensureStationMasterTable,
+} from "./utils/masterCatalogMigration.js";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ||
@@ -107,6 +113,35 @@ let activeStorage = "json";
 const nowIso = () => new Date().toISOString();
 const generateId = () =>
   `id_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+function numericCount(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeUploadHistoryRecord(record = {}) {
+  const originalFileName =
+    record.original_file_name || record.file_name || record.fileName || "";
+  const uploadedAt =
+    record.uploaded_at || record.upload_time || record.created_date || null;
+  const recordCount = numericCount(
+    record.record_count,
+    numericCount(record.records_valid, numericCount(record.insertedRecords, 0))
+  );
+
+  return {
+    ...record,
+    original_file_name: originalFileName,
+    file_name: record.file_name || originalFileName,
+    uploaded_at: uploadedAt,
+    upload_time: record.upload_time || uploadedAt,
+    record_count: recordCount,
+    records_parsed: numericCount(record.records_parsed, recordCount),
+    records_valid: numericCount(record.records_valid, recordCount),
+    records_failed: numericCount(record.records_failed, 0),
+    status: record.status || "Unknown",
+  };
+}
 
 function normalizeSort(sortOrder) {
   if (!sortOrder || typeof sortOrder !== "string") {
@@ -222,23 +257,7 @@ async function ensureStationEnrichmentColumns(tableName) {
 async function createEntityTable(tableName) {
   // Phase-2 masters use columnar schema for fast search + indexing.
   if (tableName === "station_master") {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS station_master (
-        id TEXT PRIMARY KEY,
-        station_code TEXT UNIQUE NOT NULL,
-        station_name TEXT,
-        district TEXT,
-        state TEXT,
-        division TEXT,
-        zone TEXT,
-        is_active BOOLEAN NOT NULL DEFAULT TRUE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await pool.query(
-      "ALTER TABLE station_master ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE"
-    );
+    await ensureStationMasterTable(pool);
     return;
   }
 
@@ -287,22 +306,7 @@ async function createEntityTable(tableName) {
   }
 
   if (tableName === "commodity_master") {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS commodity_master (
-        id TEXT PRIMARY KEY,
-        commodity_code TEXT UNIQUE NOT NULL,
-        commodity_name TEXT,
-        type TEXT,
-        commodity_group_code TEXT,
-        commodity_group_name TEXT,
-        is_active BOOLEAN NOT NULL DEFAULT TRUE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
-    await pool.query(
-      "CREATE INDEX IF NOT EXISTS commodity_master_commodity_group_code_idx ON commodity_master (commodity_group_code)"
-    );
+    await ensureCommodityCatalogTable(pool);
     return;
   }
 
@@ -326,19 +330,7 @@ async function createEntityTable(tableName) {
   }
 
   if (tableName.endsWith("_master")) {
-    // zone_master / division_master / state_master / district_master
-    // Generic format: code + name + (district/state/zone refs as text for now)
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS ${tableName} (
-        id TEXT PRIMARY KEY,
-        code TEXT UNIQUE NOT NULL,
-        name TEXT,
-        parent_code TEXT,
-        active BOOLEAN NOT NULL DEFAULT TRUE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
+    await ensureGenericMasterTable(pool, tableName);
     return;
   }
 
@@ -372,6 +364,12 @@ async function createEntityTable(tableName) {
     );
     await pool.query(
       `CREATE INDEX IF NOT EXISTS ${tableName}_rake_commodity_group_idx ON ${tableName} (rake_commodity_group)`
+    );
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS ${tableName}_upload_batch_id_idx ON ${tableName} ((data->>'upload_batch_id'))`
+    );
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS ${tableName}_batch_id_idx ON ${tableName} ((data->>'batch_id'))`
     );
 
     // Date indexes (business-date fields)
@@ -500,11 +498,36 @@ async function createEntityTable(tableName) {
       updated_date TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  if (tableName === "upload_logs") {
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS upload_logs_batch_id_idx ON upload_logs ((data->>'batch_id'))"
+    );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS upload_logs_uploaded_at_idx ON upload_logs ((COALESCE(data->>'uploaded_at', data->>'upload_time')))"
+    );
+  }
+
+  if (tableName === "rail_notifications") {
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS rail_notifications_batch_id_idx ON rail_notifications ((data->>'batch_id'))"
+    );
+  }
 }
 
 export async function initializeStorage() {
   try {
     await pool.query("SELECT 1");
+    console.log("✓ PostgreSQL Connected");
+  } catch (error) {
+    activeStorage = "json";
+    console.warn(
+      `PostgreSQL unavailable; JSON storage active: ${error.message}`
+    );
+    return;
+  }
+
+  try {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
@@ -518,14 +541,17 @@ export async function initializeStorage() {
       )
     `);
 
+    const catalogMigration = await ensureMasterCatalogSchema(pool);
+    console.log("✓ Catalog Table Ensured");
+    console.log(
+      catalogMigration.applied
+        ? "✓ Migration Applied"
+        : "✓ Migration Already Up To Date"
+    );
+
     for (const tableName of Object.values(ENTITY_TABLES)) {
       await createEntityTable(tableName);
     }
-
-    // Automatically add type column if not exists
-    await pool.query(`
-      ALTER TABLE commodity_master ADD COLUMN IF NOT EXISTS type TEXT
-    `).catch(err => console.error("commodity_master migration failed on startup:", err));
 
     // Automatically backfill empty date columns from JSONB data on startup
     await pool.query(`
@@ -543,12 +569,11 @@ export async function initializeStorage() {
     `).catch(err => console.error("Matured indents date backfill failed on startup:", err));
 
     activeStorage = "postgres";
-    console.log("PostgreSQL Connected");
   } catch (error) {
-    activeStorage = "json";
-    console.warn(
-      `PostgreSQL unavailable; JSON storage active: ${error.message}`
+    console.error(
+      `PostgreSQL migration failed; JSON fallback disabled for schema errors: ${error.message}`
     );
+    throw error;
   }
 }
 
@@ -767,15 +792,7 @@ export async function createRecord(entityName, record) {
         : "created_at";
     const extraColumns =
       entityName === "UserNotificationPreference"
-        ? [
-            "user_id",
-            "inward_enabled",
-            "outward_enabled",
-            "delayed_enabled",
-            "missing_match_enabled",
-            "duplicate_enabled",
-            "new_movement_enabled",
-          ]
+        ? ["user_id", "inward_enabled", "outward_enabled"]
         : entityName === "UserWatchlist"
         ? ["user_id", "station_code", "station_name"]
         : ["user_id", "name"];
@@ -921,15 +938,7 @@ export async function updateRecord(entityName, id, fields) {
         : "created_at";
     const extraColumns =
       entityName === "UserNotificationPreference"
-        ? [
-            "user_id",
-            "inward_enabled",
-            "outward_enabled",
-            "delayed_enabled",
-            "missing_match_enabled",
-            "duplicate_enabled",
-            "new_movement_enabled",
-          ]
+        ? ["user_id", "inward_enabled", "outward_enabled"]
         : entityName === "UserWatchlist"
         ? ["user_id", "station_code", "station_name"]
         : ["user_id", "name"];
@@ -1009,6 +1018,190 @@ export async function deleteRecord(entityName, id) {
     String(id),
   ]);
   return { deletedId: id, count: result.rowCount };
+}
+
+export async function listUploadHistory({ limit = 100 } = {}) {
+  const parsedLimit = Number.parseInt(limit, 10);
+  const records = await listRecords("UploadLog", {
+    sort: "-upload_time",
+    limit: Number.isFinite(parsedLimit) ? parsedLimit : 100,
+  });
+
+  return records.map(normalizeUploadHistoryRecord);
+}
+
+function hasBatchId(record, batchId) {
+  return (
+    String(record?.upload_batch_id || "") === String(batchId) ||
+    String(record?.batch_id || "") === String(batchId)
+  );
+}
+
+function notificationHistoryMatchesBatch(record, batchId) {
+  const batch = String(batchId);
+  return (
+    String(record?.batch_id || "") === batch ||
+    String(record?.movement_reference || "").startsWith(`${batch}:`) ||
+    String(record?.event_key || "").includes(`|${batch}|`) ||
+    String(record?.event_key || "").endsWith(`|${batch}`)
+  );
+}
+
+export async function deleteUploadBatch(identifier) {
+  const idOrBatchId = String(identifier || "").trim();
+  if (!idOrBatchId) {
+    const error = new Error("Upload history id or batch_id is required");
+    error.status = 400;
+    throw error;
+  }
+
+  if (activeStorage !== "postgres") {
+    const db = await readDb();
+    const uploadLogs = Array.isArray(db.UploadLog) ? db.UploadLog : [];
+    const uploadLog = uploadLogs.find(
+      (record) =>
+        String(record?.id) === idOrBatchId ||
+        String(record?.batch_id) === idOrBatchId
+    );
+
+    if (!uploadLog?.batch_id) {
+      const error = new Error("Upload history entry not found");
+      error.status = 404;
+      throw error;
+    }
+
+    const batchId = String(uploadLog.batch_id);
+    const before = {
+      freight_movements: Array.isArray(db.FreightMovement)
+        ? db.FreightMovement.length
+        : 0,
+      matured_indents: Array.isArray(db.MaturedIndent)
+        ? db.MaturedIndent.length
+        : 0,
+      rail_notifications: Array.isArray(db.RailNotification)
+        ? db.RailNotification.length
+        : 0,
+      notification_history: Array.isArray(db.notification_history)
+        ? db.notification_history.length
+        : 0,
+      upload_logs: uploadLogs.length,
+    };
+
+    db.FreightMovement = (Array.isArray(db.FreightMovement)
+      ? db.FreightMovement
+      : []
+    ).filter((record) => !hasBatchId(record, batchId));
+    db.MaturedIndent = (Array.isArray(db.MaturedIndent)
+      ? db.MaturedIndent
+      : []
+    ).filter((record) => !hasBatchId(record, batchId));
+    db.RailNotification = (Array.isArray(db.RailNotification)
+      ? db.RailNotification
+      : []
+    ).filter((record) => !hasBatchId(record, batchId));
+
+    if (Array.isArray(db.notification_history)) {
+      db.notification_history = db.notification_history.filter(
+        (record) => !notificationHistoryMatchesBatch(record, batchId)
+      );
+    }
+
+    db.UploadLog = uploadLogs.filter(
+      (record) =>
+        String(record?.id) !== String(uploadLog.id) &&
+        String(record?.batch_id) !== batchId
+    );
+
+    await writeDb(db);
+
+    return {
+      deleted: true,
+      upload: normalizeUploadHistoryRecord(uploadLog),
+      batch_id: batchId,
+      deleted_counts: {
+        freight_movements: before.freight_movements - db.FreightMovement.length,
+        matured_indents: before.matured_indents - db.MaturedIndent.length,
+        rail_notifications:
+          before.rail_notifications - db.RailNotification.length,
+        notification_history:
+          before.notification_history -
+          (Array.isArray(db.notification_history)
+            ? db.notification_history.length
+            : 0),
+        upload_logs: before.upload_logs - db.UploadLog.length,
+      },
+    };
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+
+    const uploadResult = await client.query(
+      `SELECT * FROM upload_logs
+       WHERE id = $1 OR data->>'batch_id' = $1
+       LIMIT 1`,
+      [idOrBatchId]
+    );
+    const uploadLog = uploadResult.rows[0]
+      ? fromRow(uploadResult.rows[0])
+      : null;
+
+    if (!uploadLog?.batch_id) {
+      const error = new Error("Upload history entry not found");
+      error.status = 404;
+      throw error;
+    }
+
+    const batchId = String(uploadLog.batch_id);
+    const freightResult = await client.query(
+      `DELETE FROM freight_movements
+       WHERE data->>'upload_batch_id' = $1 OR data->>'batch_id' = $1`,
+      [batchId]
+    );
+    const indentResult = await client.query(
+      `DELETE FROM matured_indents
+       WHERE data->>'upload_batch_id' = $1 OR data->>'batch_id' = $1`,
+      [batchId]
+    );
+    const notificationResult = await client.query(
+      `DELETE FROM rail_notifications
+       WHERE data->>'batch_id' = $1 OR data->>'upload_batch_id' = $1`,
+      [batchId]
+    );
+    const notificationHistoryResult = await client.query(
+      `DELETE FROM notification_history
+       WHERE movement_reference LIKE $1
+          OR event_key LIKE $2
+          OR event_key LIKE $3`,
+      [`${batchId}:%`, `%|${batchId}|%`, `%|${batchId}`]
+    );
+    const uploadLogResult = await client.query(
+      `DELETE FROM upload_logs
+       WHERE id = $1 OR data->>'batch_id' = $2`,
+      [String(uploadLog.id), batchId]
+    );
+
+    await client.query("COMMIT");
+
+    return {
+      deleted: true,
+      upload: normalizeUploadHistoryRecord(uploadLog),
+      batch_id: batchId,
+      deleted_counts: {
+        freight_movements: freightResult.rowCount,
+        matured_indents: indentResult.rowCount,
+        rail_notifications: notificationResult.rowCount,
+        notification_history: notificationHistoryResult.rowCount,
+        upload_logs: uploadLogResult.rowCount,
+      },
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function countTables() {

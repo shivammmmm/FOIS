@@ -5,6 +5,9 @@
     "batch_id": {
       "type": "string"
     },
+    "original_file_name": {
+      "type": "string"
+    },
     "file_name": {
       "type": "string"
     },
@@ -17,6 +20,13 @@
     },
     "uploaded_by": {
       "type": "string"
+    },
+    "uploaded_at": {
+      "type": "string"
+    },
+    "record_count": {
+      "type": "number",
+      "default": 0
     },
     "records_parsed": {
       "type": "number",
@@ -41,11 +51,15 @@
     "status": {
       "type": "string",
       "enum": [
+        "Completed",
         "Success",
         "Failed",
         "Partial"
       ],
-      "default": "Success"
+      "default": "Completed"
+    },
+    "notes": {
+      "type": "string"
     },
     "error_details": {
       "type": "string"

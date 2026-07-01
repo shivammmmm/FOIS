@@ -19,9 +19,11 @@ import RoleProtectedRoute from "@/components/RoleProtectedRoute";
 // Page imports
 // Dashboard removed — no longer used
 import FreightTracker from "@/pages/FreightTracker";
+import MovementDashboard from "@/pages/MovementDashboard.jsx";
 import InwardMonitor from "@/pages/InwardMonitor.jsx";
 import OutwardMonitor from "@/pages/OutwardMonitor.jsx";
 import UploadCenter from "@/pages/UploadCenter";
+import UploadHistory from "@/pages/UploadHistory";
 import Notifications from "@/pages/Notifications";
 import Settings from "@/pages/Settings";
 import Login from "@/pages/Login";
@@ -42,7 +44,7 @@ const RoleHomeRedirect = () => {
   if (!isAuthenticated) return <Navigate to="/login" replace />;
 
   return ADMIN_ROLES.includes(user?.role) ? (
-    <Navigate to="/admin/freight" replace />
+    <Navigate to="/admin/fois-reports" replace />
   ) : (
     <Navigate to="/inward-monitor" replace />
   );
@@ -102,9 +104,14 @@ const AuthenticatedApp = () => {
           }
         >
           <Route element={<Layout />}>
-            <Route path="/admin" element={<Navigate to="/admin/freight" replace />} />
+            <Route path="/admin" element={<Navigate to="/admin/fois-reports" replace />} />
             <Route path="/admin/upload" element={<UploadCenter />} />
-            <Route path="/admin/freight" element={<FreightTracker />} />
+            <Route path="/admin/upload-history" element={<UploadHistory />} />
+            <Route path="/admin/dashboard" element={<Navigate to="/admin/inward-dashboard" replace />} />
+            <Route path="/admin/fois-reports" element={<FreightTracker />} />
+            <Route path="/admin/freight" element={<Navigate to="/admin/fois-reports" replace />} />
+            <Route path="/admin/inward-dashboard" element={<MovementDashboard direction="Inward" />} />
+            <Route path="/admin/outward-dashboard" element={<MovementDashboard direction="Outward" />} />
             <Route path="/admin/inward" element={<InwardMonitor />} />
             <Route path="/admin/outward" element={<OutwardMonitor />} />
             <Route path="/admin/notifications" element={<Notifications />} />
@@ -130,7 +137,8 @@ const AuthenticatedApp = () => {
             />
 
             {/* ⚙️ CORE LOCK: Master Management successfully mapped inside secure layout route */}
-            <Route path="/admin/master-management" element={<MasterManagement />} />
+            <Route path="/admin/master-management" element={<Navigate to="/admin/master-management/state" replace />} />
+            <Route path="/admin/master-management/:masterKey" element={<MasterManagement />} />
 
             <Route path="/admin/users" element={<UserManagement />} />
             <Route path="/admin/settings" element={<Settings />} />
@@ -146,8 +154,11 @@ const AuthenticatedApp = () => {
           }
         >
           <Route element={<Layout />}>
-            <Route path="/dashboard" element={<Navigate to="/inward-monitor" replace />} />
-            <Route path="/search" element={<FreightTracker />} />
+            <Route path="/dashboard" element={<Navigate to="/inward-dashboard" replace />} />
+            <Route path="/inward-dashboard" element={<MovementDashboard direction="Inward" />} />
+            <Route path="/outward-dashboard" element={<MovementDashboard direction="Outward" />} />
+            <Route path="/fois-reports" element={<FreightTracker />} />
+            <Route path="/search" element={<Navigate to="/fois-reports" replace />} />
             <Route path="/inward-monitor" element={<InwardMonitor />} />
             <Route path="/outward-monitor" element={<OutwardMonitor />} />
             <Route
@@ -158,7 +169,7 @@ const AuthenticatedApp = () => {
         </Route>
 
         {/* Dynamic Nav Fallbacks & Legacy Redirections Engine */}
-        <Route path="/tracker" element={<Navigate to="/search" replace />} />
+        <Route path="/tracker" element={<Navigate to="/fois-reports" replace />} />
         <Route path="/upload" element={<Navigate to="/admin/upload" replace />} />
         <Route path="/notifications" element={<Navigate to="/admin/notifications" replace />} />
         <Route path="/settings" element={<Navigate to="/admin/settings" replace />} />

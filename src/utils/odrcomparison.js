@@ -51,6 +51,7 @@ export function parseODRRow(row, batchId) {
 
   const rawRakeCmdt = fields.rakeCmdt || "";
   const isWagon = isWagonType(rawRakeCmdt);
+  const wagonType = fields.wagonType || (isWagon ? rawRakeCmdt : "");
 
   return {
     odr_number: fields.indentNo,
@@ -58,8 +59,13 @@ export function parseODRRow(row, batchId) {
     division: fields.division,
     station_from: fields.stationFrom,
     station_to: fields.destination,
+    company: fields.cnsr,
+    company_code: fields.cnsr,
     commodity: fields.commodity,
-    rake_type: isWagon ? rawRakeCmdt : "",
+    product: fields.product,
+    product_code: fields.product,
+    rake_type: fields.product,
+    wagon_type: wagonType,
     rake_cmdt: !isWagon ? rawRakeCmdt : "",
     rake_commodity_code: !isWagon ? rawRakeCmdt : "",
     wagons: parseInt(fields.suppliedUnits, 10) || parseInt(fields.indented8w, 10) || parseInt(fields.indentedUnits, 10) || 0,
@@ -83,6 +89,7 @@ export function parseIndentRow(row, batchId) {
 
   const rawRakeCmdt = fields.rakeCmdt || "";
   const isWagon = isWagonType(rawRakeCmdt);
+  const wagonType = fields.wagonType || (isWagon ? rawRakeCmdt : "");
 
   return {
     indent_number: fields.indentNo,
@@ -90,8 +97,13 @@ export function parseIndentRow(row, batchId) {
     division: fields.division,
     station_from: fields.stationFrom,
     station_to: fields.destination,
+    company: fields.cnsr,
+    company_code: fields.cnsr,
     commodity: fields.commodity,
-    rake_type: isWagon ? rawRakeCmdt : "",
+    product: fields.product,
+    product_code: fields.product,
+    rake_type: fields.product,
+    wagon_type: wagonType,
     rake_cmdt: !isWagon ? rawRakeCmdt : "",
     rake_commodity_code: !isWagon ? rawRakeCmdt : "",
     wagons_demanded: parseInt(fields.indented8w, 10) || parseInt(fields.indentedUnits, 10) || 0,
@@ -124,14 +136,41 @@ function getFoisFields(row) {
     indentDate: cell(row, 'DATE'),
     indentTime: cell(row, 'TIME'),
     expectedLoadingDate: cell(row, 'EXPECTED LOADING DATE'),
-    cnsr: cell(row, 'CNSR').toUpperCase(),
+    cnsr: firstCell(row, [
+      'CNSR',
+      'CONSIGNOR',
+      'CONSIGNOR CODE',
+      'CONSIGNOR NAME',
+      'COMPANY',
+      'COMPANY CODE',
+      'COMPANY NAME',
+    ]).toUpperCase(),
     cnsg: cell(row, 'CNSG').toUpperCase(),
     commodity: cell(row, 'CMDT').toUpperCase(),
+    product: firstCell(row, [
+      'PRODUCT CODE',
+      'PRODUCT',
+      'PRODUCT NAME',
+      'SUB COMMODITY',
+      'SUB-COMMODITY',
+      'SUBCOMMODITY',
+      'SUB CMDT',
+      'SUB CMDT CODE',
+      'SUB COMMODITY CODE',
+    ]).toUpperCase(),
     tt: cell(row, 'TT'),
     pc: cell(row, 'PC'),
     pbf: cell(row, 'PBF'),
     via: cell(row, 'VIA').toUpperCase(),
     rakeCmdt: cell(row, 'RAKE CMDT').toUpperCase(),
+    wagonType: firstCell(row, [
+      'WAGON TYPE',
+      'RAKE STOCK TYPE',
+      'RAKE STOCK',
+      'STOCK TYPE',
+      'WAGON',
+      'WAGON CODE',
+    ]).toUpperCase(),
     destination: cell(row, 'DSTN').toUpperCase(),
     indentType: cell(row, 'TYPE').toUpperCase(),
     indentedUnits: cell(row, 'INDENTED UNTS'),
@@ -146,6 +185,14 @@ function getFoisFields(row) {
 function cell(row, key) {
   const normalized = normalizeRow(row);
   return String(normalized[normalizeHeader(key)] ?? '').trim();
+}
+
+function firstCell(row, keys) {
+  for (const key of keys) {
+    const value = cell(row, key);
+    if (value) return value;
+  }
+  return '';
 }
 
 function normalizeRow(row) {
@@ -167,6 +214,13 @@ function buildFoisRawData(fields) {
     expected_loading_date: fields.expectedLoadingDate,
     cnsr: fields.cnsr,
     cnsg: fields.cnsg,
+    Company: fields.cnsr,
+    CMDT: fields.commodity,
+    Commodity: fields.commodity,
+    Product: fields.product,
+    "Rake CMDT": fields.rakeCmdt,
+    "Wagon Type": fields.wagonType,
+    FNR: fields.indentNo,
     via: fields.via,
     pbf: fields.pbf,
     pc: fields.pc,

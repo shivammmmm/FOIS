@@ -23,8 +23,36 @@ const WAGON_TYPE_CODES = new Set([
   "NMGH",
 ]);
 
+const RAKE_CMDT_RAW_KEYS = [
+  "Rake CMDT",
+  "RAKE CMDT",
+  "rake_cmdt",
+  "rakeCmdt",
+  "Rake Commodity",
+  "Rake Commodity Code",
+];
+
 export function normalizeFilterValue(value) {
   return String(value || "").trim().toUpperCase();
+}
+
+function readRawValue(record, ...keys) {
+  const raw = record?.raw_data || {};
+  const normalizedRaw = Object.entries(raw).reduce((acc, [key, value]) => {
+    acc[normalizeFilterValue(key)] = value;
+    return acc;
+  }, {});
+
+  for (const key of keys) {
+    const value =
+      raw[key] ??
+      record?.[key] ??
+      normalizedRaw[normalizeFilterValue(key)];
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return String(value).trim();
+    }
+  }
+  return "";
 }
 
 export function getRecordStationCode(record, movementType) {
@@ -55,11 +83,7 @@ export function getRakeCmdtValue(record) {
   const candidates = [
     record?.rake_cmdt,
     record?.rake_commodity_code,
-    record?.raw_data?.rake_cmdt,
-    record?.raw_data?.rakeCmdt,
-    record?.raw_data?.["RAKE CMDT"],
-    record?.rake_type,
-    record?.commodity,
+    readRawValue(record, ...RAKE_CMDT_RAW_KEYS),
   ];
 
   for (const candidate of candidates) {
@@ -71,10 +95,26 @@ export function getRakeCmdtValue(record) {
   return "";
 }
 
+export function getBusinessRakeCmdtCode(record) {
+  return getRakeCmdtValue(record);
+}
+
+export function getBusinessRakeCmdtDisplay(record) {
+  return (
+    record?.rake_commodity_name ||
+    record?.rake_cmdt_name ||
+    readRawValue(record, "Rake CMDT Name", "RAKE CMDT NAME", ...RAKE_CMDT_RAW_KEYS) ||
+    getBusinessRakeCmdtCode(record)
+  );
+}
+
 export function isWagonType(value) {
+  if (!value) return false;
   if (/^\d+$/.test(value)) return true;
-  if (WAGON_TYPE_CODES.has(value)) return true;
-  return /^(BOX|BOB|BOS|BCN|BTP|NMG)/.test(value);
+  const normalized = normalizeFilterValue(value);
+  if (/^\d+$/.test(normalized)) return true;
+  if (WAGON_TYPE_CODES.has(normalized)) return true;
+  return /^(BOX|BOB|BOS|BCN|BTP|NMG)/.test(normalized);
 }
 
 export function uniqueSortedOptions(values) {

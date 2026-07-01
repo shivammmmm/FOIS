@@ -1,820 +1,715 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as XLSX from "xlsx";
+import {
+  Download,
+  Edit2,
+  Plus,
+  Search,
+  Trash2,
+  Upload,
+} from "lucide-react";
+import { useNavigate, useParams } from "react-router-dom";
+import { apiClient } from "@/api/apiClient";
 import SearchableSelect from "@/components/SearchableSelect";
 
-const STATE_MASTER_API = "/api/state-master";
-const DISTRICT_MASTER_API = "/api/district-master";
-const DISTRICT_LOOKUP_API = "/api/masters/districts";
+const PAGE_SIZE = 12;
+const CODE_FIELDS = new Set([
+  "code",
+  "parent_code",
+  "station_code",
+  "state",
+  "district",
+  "zone",
+  "division",
+]);
 
-const normalizeStateName = (value) => String(value || "").trim();
-const normalizeStateCode = (value) =>
-  String(value || "")
-    .trim()
-    .toUpperCase();
-const normalizeDistrictName = (value) => String(value || "").trim();
-
-const authHeaders = (withJson = false) => {
-  const token = localStorage.getItem("token") || "";
-  return {
-    ...(withJson ? { "Content-Type": "application/json" } : {}),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  };
-};
-
-const readApiError = async (res, fallback) => {
-  const data = await res.json().catch(() => ({}));
-  return data?.error || data?.message || `${fallback} (${res.status})`;
-};
+const MASTER_TYPES = [
+  {
+    key: "state",
+    label: "State Master",
+    importHeaders: ["StateName", "StateCode"],
+    columns: ["code", "name"],
+    fields: [
+      { name: "code", label: "State Code", placeholder: "MH" },
+      { name: "name", label: "State Name", placeholder: "Maharashtra" },
+    ],
+    importMap: { code: ["StateCode"], name: ["StateName"] },
+    validate: (form) => requireFields(form, [
+      ["code", "State Code"],
+      ["name", "State Name"],
+    ]),
+  },
+  {
+    key: "district",
+    label: "District Master",
+    importHeaders: ["StateCode", "DistrictName", "DistrictCode"],
+    columns: ["parent_code", "code", "name"],
+    fields: [
+      { name: "parent_code", label: "Parent State", type: "select", source: "states" },
+      { name: "code", label: "District Code", placeholder: "NGP" },
+      { name: "name", label: "District Name", placeholder: "Nagpur" },
+    ],
+    importMap: {
+      parent_code: ["StateCode"],
+      code: ["DistrictCode"],
+      name: ["DistrictName"],
+    },
+    validate: (form) => requireFields(form, [
+      ["parent_code", "Parent State"],
+      ["code", "District Code"],
+      ["name", "District Name"],
+    ]),
+  },
+  {
+    key: "station",
+    label: "Station Master",
+    importHeaders: ["StationCode", "StationName", "StateCode", "DistrictCode", "ZoneCode", "DivisionCode"],
+    columns: ["station_code", "station_name", "state", "district", "zone", "division"],
+    fields: [
+      { name: "station_code", label: "Station Code", placeholder: "BRC" },
+      { name: "station_name", label: "Station Name", placeholder: "Vadodara" },
+      { name: "state", label: "State", type: "select", source: "states" },
+      { name: "district", label: "District", type: "select", source: "districts", dependsOn: "state" },
+      { name: "zone", label: "Zone", type: "select", source: "zones" },
+      { name: "division", label: "Division", type: "select", source: "divisions", dependsOn: "zone" },
+    ],
+    importMap: {
+      station_code: ["StationCode"],
+      station_name: ["StationName"],
+      state: ["StateCode"],
+      district: ["DistrictCode"],
+      zone: ["ZoneCode"],
+      division: ["DivisionCode"],
+    },
+    validate: (form) => requireFields(form, [
+      ["station_code", "Station Code"],
+      ["station_name", "Station Name"],
+      ["state", "State"],
+      ["district", "District"],
+      ["zone", "Zone"],
+      ["division", "Division"],
+    ]),
+  },
+  {
+    key: "zone",
+    label: "Zone Master",
+    importHeaders: ["ZoneCode", "ZoneName"],
+    columns: ["code", "name"],
+    fields: [
+      { name: "code", label: "Zone Code", placeholder: "WR" },
+      { name: "name", label: "Zone Name", placeholder: "Western Railway" },
+    ],
+    importMap: { code: ["ZoneCode"], name: ["ZoneName"] },
+    validate: (form) => requireFields(form, [
+      ["code", "Zone Code"],
+      ["name", "Zone Name"],
+    ]),
+  },
+  {
+    key: "division",
+    label: "Division Master",
+    importHeaders: ["ZoneCode", "DivisionCode", "DivisionName"],
+    columns: ["parent_code", "code", "name"],
+    fields: [
+      { name: "parent_code", label: "Zone", type: "select", source: "zones" },
+      { name: "code", label: "Division Code", placeholder: "RTM" },
+      { name: "name", label: "Division Name", placeholder: "Ratlam Division" },
+    ],
+    importMap: {
+      parent_code: ["ZoneCode"],
+      code: ["DivisionCode"],
+      name: ["DivisionName"],
+    },
+    validate: (form) => requireFields(form, [
+      ["parent_code", "Zone"],
+      ["code", "Division Code"],
+      ["name", "Division Name"],
+    ]),
+  },
+  {
+    key: "commodity",
+    label: "Commodity Master",
+    importHeaders: ["CommodityCode", "CommodityName"],
+    columns: ["code", "name"],
+    fields: [
+      { name: "code", label: "Commodity Code", placeholder: "POL" },
+      { name: "name", label: "Commodity Full Name", placeholder: "Petroleum Oil & Lubricants" },
+    ],
+    importMap: { code: ["CommodityCode"], name: ["CommodityName"] },
+    validate: (form) => requireFields(form, [
+      ["code", "Commodity Code"],
+      ["name", "Commodity Full Name"],
+    ]),
+  },
+  {
+    key: "company",
+    label: "Company Master",
+    importHeaders: ["CompanyCode", "CompanyName"],
+    columns: ["code", "name"],
+    fields: [
+      { name: "code", label: "Company Code", placeholder: "IOCL" },
+      { name: "name", label: "Company Name", placeholder: "Indian Oil Corporation Limited" },
+    ],
+    importMap: { code: ["CompanyCode"], name: ["CompanyName"] },
+    validate: (form) => requireFields(form, [
+      ["code", "Company Code"],
+      ["name", "Company Name"],
+    ]),
+  },
+  {
+    key: "product",
+    label: "Product Master",
+    importHeaders: ["ProductCode", "ProductName"],
+    columns: ["code", "name"],
+    fields: [
+      { name: "code", label: "Product Code", placeholder: "HSD" },
+      { name: "name", label: "Product Name", placeholder: "High Speed Diesel" },
+    ],
+    importMap: { code: ["ProductCode"], name: ["ProductName"] },
+    validate: (form) => requireFields(form, [
+      ["code", "Product Code"],
+      ["name", "Product Name"],
+    ]),
+  },
+];
 
 export default function MasterManagement() {
-  const tabs = useMemo(() => ["state", "district", "commodity"], []);
-
-  const [activeTab, setActiveTab] = useState("state");
-  const [uploading, setUploading] = useState(false);
-  const didLoadStates = useRef(false);
-
-  // Centralized UI feedback
-  const [uiMessage, setUiMessage] = useState({
-    kind: "info", // info | success | warning | error
-    text: "",
+  const fileInputRef = useRef(null);
+  const navigate = useNavigate();
+  const { masterKey } = useParams();
+  const activeKey = MASTER_TYPES.some((master) => master.key === masterKey)
+    ? masterKey
+    : "state";
+  const [rows, setRows] = useState([]);
+  const [references, setReferences] = useState({
+    states: [],
+    districts: [],
+    zones: [],
+    divisions: [],
   });
+  const [total, setTotal] = useState(0);
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [form, setForm] = useState({});
+  const [editingId, setEditingId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState({ kind: "info", text: "" });
 
-  const [states, setStates] = useState([]);
-
-  // Individual Form States
-  const [stateForm, setStateForm] = useState({ name: "", code: "" });
-  const [districtForm, setDistrictForm] = useState({
-    name: "",
-    code: "",
-    parent_code: "",
-  });
-
-  const [commodityForm, setCommodityForm] = useState({
-    code: "",
-    full_name: "",
-    type: "Commodity",
-  });
-
-  const toastClass = useMemo(() => {
-    const base = "text-sm px-3 py-2 rounded-lg border";
-    if (uiMessage.kind === "success")
-      return `${base} bg-emerald-50 border-emerald-200 text-emerald-800`;
-    if (uiMessage.kind === "warning")
-      return `${base} bg-amber-50 border-amber-200 text-amber-800`;
-    if (uiMessage.kind === "error")
-      return `${base} bg-red-50 border-red-200 text-red-800`;
-    return `${base} bg-blue-50 border-blue-200 text-blue-800`;
-  }, [uiMessage.kind]);
-
-  // Fetch States using Native Fetch API (auth-protected)
-  const loadStates = async () => {
-    try {
-      console.info("[StateMaster] Loading states", {
-        endpoint: STATE_MASTER_API,
-      });
-      const res = await fetch(STATE_MASTER_API, {
-        headers: authHeaders(),
-      });
-      if (!res.ok) {
-        throw new Error(await readApiError(res, "Failed to fetch states"));
-      }
-      const data = await res.json();
-      const items = Array.isArray(data) ? data : data?.items || [];
-      setStates(items);
-      console.info("[StateMaster] States loaded", { count: items.length });
-    } catch (err) {
-      setUiMessage({
-        kind: "error",
-        text: err?.message || "Unable to load state master list.",
-      });
-      console.error("[StateMaster] Failed to load states:", err);
-    }
-  };
+  const activeMaster = useMemo(
+    () => MASTER_TYPES.find((master) => master.key === activeKey) || MASTER_TYPES[0],
+    [activeKey]
+  );
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   useEffect(() => {
-    if (didLoadStates.current) return;
-    didLoadStates.current = true;
-    loadStates();
+    if (masterKey !== activeKey) {
+      navigate(`/admin/master-management/${activeKey}`, { replace: true });
+    }
+  }, [activeKey, masterKey, navigate]);
+
+  useEffect(() => {
+    resetFormFor(activeMaster);
+    setSearch("");
+    setPage(1);
+  }, [activeMaster]);
+
+  useEffect(() => {
+    loadRows();
+  }, [activeKey, page, search]);
+
+  useEffect(() => {
+    loadReferences();
   }, []);
 
-  // Convert possible XLSX fields to expected casing
-  const readRowFields = (row) => {
-    // Expected Columns: StateName, StateCode, DistrictName
-    const stateName = normalizeStateName(
-      row.StateName ?? row.state_name ?? row.State ?? row.name ?? row.Name
-    );
-    const stateCode = normalizeStateCode(
-      row.StateCode ?? row.state_code ?? row.Code ?? row.code
-    );
-    const districtName = normalizeDistrictName(
-      row.DistrictName ??
-        row.district_name ??
-        row.District ??
-        row.district ??
-        row.District_Name
-    );
-    return { stateName, stateCode, districtName };
-  };
+  async function loadRows() {
+    setLoading(true);
+    try {
+      const data = await apiClient.masterCatalog.list(activeKey, {
+        search,
+        offset: (page - 1) * PAGE_SIZE,
+        limit: PAGE_SIZE,
+      });
+      setRows(data?.items || []);
+      setTotal(data?.total || 0);
+    } catch (error) {
+      setMessage({ kind: "error", text: error?.message || "Failed to load master records." });
+    } finally {
+      setLoading(false);
+    }
+  }
 
-  const handleExcelImport = async (e) => {
-    const file = e.target.files?.[0];
+  async function loadReferences() {
+    try {
+      const [states, districts, zones, divisions] = await Promise.all([
+        apiClient.masterCatalog.list("state", { limit: 10000 }),
+        apiClient.masterCatalog.list("district", { limit: 10000 }),
+        apiClient.masterCatalog.list("zone", { limit: 10000 }),
+        apiClient.masterCatalog.list("division", { limit: 10000 }),
+      ]);
+      setReferences({
+        states: states?.items || [],
+        districts: districts?.items || [],
+        zones: zones?.items || [],
+        divisions: divisions?.items || [],
+      });
+    } catch (error) {
+      setMessage({ kind: "error", text: error?.message || "Failed to load dropdown masters." });
+    }
+  }
+
+  function resetFormFor(master = activeMaster) {
+    setForm(Object.fromEntries(master.fields.map((field) => [field.name, ""])));
+    setEditingId(null);
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault();
+    const validation = activeMaster.validate(form);
+    if (validation) {
+      setMessage({ kind: "error", text: validation });
+      return;
+    }
+
+    setSaving(true);
+    setMessage({ kind: "info", text: "" });
+    try {
+      if (editingId) {
+        await apiClient.masterCatalog.update(activeKey, editingId, normalizePayload(form, activeMaster));
+        setMessage({ kind: "success", text: `${activeMaster.label} updated.` });
+      } else {
+        await apiClient.masterCatalog.create(activeKey, normalizePayload(form, activeMaster));
+        setMessage({ kind: "success", text: `${activeMaster.label} saved.` });
+      }
+      resetFormFor(activeMaster);
+      await Promise.all([loadRows(), loadReferences()]);
+    } catch (error) {
+      setMessage({ kind: "error", text: error?.message || "Failed to save master record." });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function editRow(row) {
+    setEditingId(row.id);
+    setForm(
+      Object.fromEntries(
+        activeMaster.fields.map((field) => [field.name, row[field.name] || ""])
+      )
+    );
+    setMessage({ kind: "info", text: "" });
+  }
+
+  async function deleteRow(row) {
+    if (!window.confirm(`Delete ${row.code || row.station_code || row.name}?`)) return;
+    setMessage({ kind: "info", text: "" });
+    try {
+      await apiClient.masterCatalog.delete(activeKey, row.id);
+      await Promise.all([loadRows(), loadReferences()]);
+      setMessage({ kind: "success", text: `${activeMaster.label} deleted.` });
+    } catch (error) {
+      setMessage({ kind: "error", text: error?.message || "Failed to delete master record." });
+    }
+  }
+
+  async function handleImport(event) {
+    const file = event.target.files?.[0];
     if (!file) return;
 
-    setUploading(true);
-    setUiMessage({ kind: "info", text: "Reading Excel workbook..." });
+    setSaving(true);
+    setMessage({ kind: "info", text: "Importing records..." });
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: "array" });
+      const records = workbook.SheetNames.flatMap((sheetName) =>
+        XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" })
+      );
 
-    const reader = new FileReader();
-
-    reader.onload = async (evt) => {
-      try {
-        const bstr = evt.target.result;
-        // XLSX read supports binary string
-        const wb = XLSX.read(bstr, { type: "binary" });
-        const wsname = wb.SheetNames?.[0];
-        const ws = wb.Sheets[wsname];
-        const data = XLSX.utils.sheet_to_json(ws);
-
-        if (!Array.isArray(data) || data.length === 0) {
-          setUiMessage({
-            kind: "warning",
-            text: "Excel file is empty (no rows found).",
-          });
-          return;
+      let imported = 0;
+      let skipped = 0;
+      let failed = 0;
+      for (const record of records) {
+        const payload = buildPayloadFromImport(record, activeMaster);
+        const validation = activeMaster.validate(payload);
+        if (validation) {
+          skipped += 1;
+          continue;
         }
 
-        setUiMessage({
-          kind: "info",
-          text: `Processing ${data.length} rows...`,
-        });
-
-        const knownCodes = new Set(
-          states.map((state) => normalizeStateCode(state?.code)).filter(Boolean)
-        );
-        let successStates = 0;
-        let successDistricts = 0;
-        let duplicateDistricts = 0;
-        const existingStatesUsed = new Set();
-        let skippedRows = 0;
-        let errorRows = 0;
-        const districtNamesByState = new Map();
-
-        const loadDistrictNamesForState = async (stateCode) => {
-          if (districtNamesByState.has(stateCode)) {
-            return districtNamesByState.get(stateCode);
-          }
-
-          try {
-            const res = await fetch(
-              `${DISTRICT_LOOKUP_API}?state_code=${encodeURIComponent(
-                stateCode
-              )}`,
-              { headers: authHeaders() }
-            );
-            if (!res.ok) {
-              throw new Error(
-                await readApiError(res, "Failed to fetch districts")
-              );
-            }
-
-            const data = await res.json();
-            const items = Array.isArray(data) ? data : data?.items || [];
-            const districtNames = new Set(
-              items
-                .map((district) =>
-                  normalizeDistrictName(district?.name).toUpperCase()
-                )
-                .filter(Boolean)
-            );
-            districtNamesByState.set(stateCode, districtNames);
-            return districtNames;
-          } catch (err) {
-            console.warn("[DistrictMaster import] District lookup failed", {
-              stateCode,
-              error: err,
-            });
-            const districtNames = new Set();
-            districtNamesByState.set(stateCode, districtNames);
-            return districtNames;
-          }
-        };
-
-        for (const [idx, row] of data.entries()) {
-          const { stateName, stateCode, districtName } = readRowFields(row);
-
-          if (!stateName || !stateCode) {
-            skippedRows += 1;
-            console.warn("[Master import] Skipping row with missing state data", {
-              rowNumber: idx + 2,
-              row,
-            });
-            continue;
-          }
-
-          if (knownCodes.has(stateCode)) {
-            existingStatesUsed.add(stateCode);
-            console.info("[DistrictMaster import] Using existing state", {
-              rowNumber: idx + 2,
-              name: stateName,
-              code: stateCode,
-            });
-          } else {
-            try {
-              const payload = { name: stateName, code: stateCode };
-              console.info("[StateMaster import] Creating state", {
-                rowNumber: idx + 2,
-                endpoint: STATE_MASTER_API,
-                payload,
-              });
-
-              const stateRes = await fetch(STATE_MASTER_API, {
-                method: "POST",
-                headers: authHeaders(true),
-                body: JSON.stringify(payload),
-              });
-
-              if (!stateRes.ok) {
-                const message = await readApiError(
-                  stateRes,
-                  "Error creating state"
-                );
-                if (
-                  stateRes.status === 409 ||
-                  /already exists/i.test(message)
-                ) {
-                  knownCodes.add(stateCode);
-                  existingStatesUsed.add(stateCode);
-                  console.info(
-                    "[DistrictMaster import] Existing state reported by API",
-                    {
-                      rowNumber: idx + 2,
-                      name: stateName,
-                      code: stateCode,
-                      message,
-                    }
-                  );
-                } else {
-                  errorRows += 1;
-                  console.warn("[StateMaster import] API rejected row", {
-                    rowNumber: idx + 2,
-                    name: stateName,
-                    code: stateCode,
-                    status: stateRes.status,
-                    message,
-                  });
-                  continue;
-                }
-              } else {
-                const stateData = await stateRes.json().catch(() => ({}));
-                successStates += 1;
-                knownCodes.add(normalizeStateCode(stateData?.code || stateCode));
-                console.info(
-                  "[StateMaster import] State created",
-                  {
-                    rowNumber: idx + 2,
-                    name: stateName,
-                    code: stateCode,
-                  }
-                );
-              }
-            } catch (err) {
-              errorRows += 1;
-              console.warn("[StateMaster import] Row failed", {
-                rowNumber: idx + 2,
-                row,
-                error: err,
-              });
-              continue;
-            }
-          }
-
-          if (!districtName) {
-            continue;
-          }
-
-          try {
-            const existingDistrictNames = await loadDistrictNamesForState(
-              stateCode
-            );
-            const districtKey = districtName.toUpperCase();
-
-            if (existingDistrictNames.has(districtKey)) {
-              duplicateDistricts += 1;
-              console.info("[DistrictMaster import] Duplicate district skipped", {
-                rowNumber: idx + 2,
-                stateCode,
-                districtName,
-              });
-              continue;
-            }
-
-            const payload = {
-              name: districtName,
-              parent_code: stateCode,
-            };
-            console.info("[DistrictMaster import] Creating district", {
-              rowNumber: idx + 2,
-              endpoint: DISTRICT_MASTER_API,
-              payload,
-            });
-
-            const districtRes = await fetch(DISTRICT_MASTER_API, {
-              method: "POST",
-              headers: authHeaders(true),
-              body: JSON.stringify(payload),
-            });
-
-            if (!districtRes.ok) {
-              const message = await readApiError(
-                districtRes,
-                "Error creating district"
-              );
-              if (
-                districtRes.status === 409 ||
-                /already exists/i.test(message)
-              ) {
-                duplicateDistricts += 1;
-                existingDistrictNames.add(districtKey);
-                console.info(
-                  "[DistrictMaster import] Duplicate district reported by API",
-                  {
-                    rowNumber: idx + 2,
-                    stateCode,
-                    districtName,
-                    message,
-                  }
-                );
-                continue;
-              }
-
-              errorRows += 1;
-              console.warn("[DistrictMaster import] API rejected row", {
-                rowNumber: idx + 2,
-                stateCode,
-                districtName,
-                status: districtRes.status,
-                message,
-              });
-              continue;
-            }
-
-            await districtRes.json().catch(() => ({}));
-            successDistricts += 1;
-            existingDistrictNames.add(districtKey);
-          } catch (err) {
-            errorRows += 1;
-            console.warn("[DistrictMaster import] Row failed", {
-              rowNumber: idx + 2,
-              row,
-              error: err,
-            });
-          }
+        try {
+          await apiClient.masterCatalog.create(activeKey, normalizePayload(payload, activeMaster));
+          imported += 1;
+        } catch {
+          failed += 1;
         }
-
-        setUiMessage({
-          kind: "success",
-          text: `Bulk import finished. States created: ${successStates}, Existing states used: ${existingStatesUsed.size}, Districts created: ${successDistricts}, Duplicate districts: ${duplicateDistricts}, Skipped: ${skippedRows}, Errors: ${errorRows}.`,
-        });
-        await loadStates();
-      } catch (error) {
-        console.error("Excel mapping breakdown:", error);
-        setUiMessage({
-          kind: "error",
-          text: "Failed to read excel layout structure.",
-        });
-      } finally {
-        setUploading(false);
-        // reset input
-        e.target.value = "";
-      }
-    };
-
-    reader.readAsBinaryString(file);
-  };
-
-  // Individual Form Submissions using native fetch
-  const handleCreateState = async (e) => {
-    e.preventDefault();
-
-    if (!stateForm.name.trim() || !stateForm.code.trim()) {
-      setUiMessage({
-        kind: "warning",
-        text: "State name and code are required.",
-      });
-      return;
-    }
-
-    setUploading(true);
-    try {
-      const payload = {
-        name: normalizeStateName(stateForm.name),
-        code: normalizeStateCode(stateForm.code),
-      };
-      console.info("[StateMaster] Creating state", {
-        endpoint: STATE_MASTER_API,
-        payload,
-      });
-
-      const res = await fetch(STATE_MASTER_API, {
-        method: "POST",
-        headers: authHeaders(true),
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const err = new Error(data?.error || "Error creating state");
-        err.kind = res.status === 409 ? "warning" : "error";
-        throw err;
       }
 
-      setUiMessage({ kind: "success", text: "State Created Successfully!" });
-      setStateForm({ name: "", code: "" });
-      await loadStates();
-    } catch (err) {
-      setUiMessage({
-        kind: err?.kind || "error",
-        text: err?.message || "Failed to create state.",
+      await Promise.all([loadRows(), loadReferences()]);
+      setMessage({
+        kind: failed > 0 ? "warning" : "success",
+        text: `Import finished. Imported: ${imported}, Skipped: ${skipped}, Failed: ${failed}.`,
       });
-      console.error("[StateMaster] Failed to create state:", err);
+    } catch (error) {
+      setMessage({ kind: "error", text: error?.message || "Import failed." });
     } finally {
-      setUploading(false);
+      setSaving(false);
+      event.target.value = "";
     }
-  };
+  }
 
-  const handleCreateDistrict = async (e) => {
-    e.preventDefault();
+  function exportRows() {
+    const exportData = rows.map((row) =>
+      Object.fromEntries(activeMaster.columns.map((column) => [columnLabel(column), row[column] || ""]))
+    );
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(exportData), activeMaster.label);
+    XLSX.writeFile(workbook, `${activeMaster.label.replace(/\s+/g, "_")}_${Date.now()}.xlsx`);
+  }
 
-    if (!districtForm.name.trim() || !districtForm.parent_code) {
-      setUiMessage({
-        kind: "warning",
-        text: "District name and parent state are required.",
-      });
-      return;
-    }
-
-    setUploading(true);
-    try {
-      const token = localStorage.getItem("token") || "";
-      const parent_code = String(districtForm.parent_code || "").trim();
-      const payload = {
-        name: districtForm.name.trim(),
-        code: districtForm.code?.trim() || "",
-        parent_code,
-      };
-
-      console.log("[createDistrict] final payload:", payload);
-
-      const res = await fetch("/api/masters/districts", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || "Error creating district");
-
-      setUiMessage({ kind: "success", text: "District Mapped Successfully!" });
-      setDistrictForm({ name: "", code: "", parent_code: "" });
-    } catch (err) {
-      setUiMessage({
-        kind: "error",
-        text: err?.message || "Failed to map district.",
-      });
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleCreateCommodity = async (e) => {
-    e.preventDefault();
-
-    if (
-      !commodityForm.code.trim() ||
-      !commodityForm.full_name.trim()
-    ) {
-      setUiMessage({
-        kind: "warning",
-        text: "Code and full name are required.",
-      });
-      return;
-    }
-
-    setUploading(true);
-    try {
-      const payload = {
-        code: commodityForm.code.trim(),
-        full_name: commodityForm.full_name.trim(),
-        type: commodityForm.type,
-      };
-
-      const token = localStorage.getItem("token") || "";
-      const res = await fetch("/api/masters/commodities", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || "Error creating dictionary entry");
-
-      setUiMessage({
-        kind: "success",
-        text: "Code Dictionary Entry Registered Successfully!",
-      });
-      setCommodityForm({
-        code: "",
-        full_name: "",
-        type: "Commodity",
-      });
-    } catch (err) {
-      setUiMessage({
-        kind: "error",
-        text: err?.message || "Failed to register code.",
-      });
-    } finally {
-      setUploading(false);
-    }
-  };
+  const messageClass =
+    message.kind === "error"
+      ? "border-destructive/30 bg-destructive/10 text-destructive"
+      : message.kind === "warning"
+        ? "border-amber-300 bg-amber-50 text-amber-800"
+        : "border-border bg-card text-muted-foreground";
+  const activeMasterName = activeMaster.label.replace(" Master", "");
 
   return (
-    <div className="p-6 max-w-4xl mx-auto bg-gray-50 min-h-screen rounded-xl shadow-inner">
-      {/* HEADER & EXCEL WIDGET */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b pb-3 mb-6 gap-4">
-        <h2 className="text-2xl font-bold text-gray-800 flex items-center gap-2">
-          ⚙️ Core Master Management Panel
-        </h2>
-
-        <div className="bg-white p-3 rounded-xl shadow-sm border border-dashed border-blue-400 flex flex-col gap-1 text-left w-full md:w-auto">
-          <span className="text-xs font-bold text-blue-700">
-            ⚡ Bulk Import (Excel)
-          </span>
-          <input
-            type="file"
-            accept=".xlsx,.xls,.csv"
-            onChange={handleExcelImport}
-            disabled={uploading}
-            className="text-xs text-gray-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
-          />
-          {uploading ? (
-            <span className="text-[10px] text-orange-500 font-medium animate-pulse">
-              Processing... Please wait.
-            </span>
-          ) : (
-            <span className="text-[10px] text-muted-foreground">
-              Columns: StateName, StateCode, DistrictName
-            </span>
-          )}
+    <div className="min-h-full bg-background p-4 lg:p-6 animate-fade-in">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Master Management</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Manage state, district, station, zone, division, commodity, company and product masters.
+          </p>
         </div>
       </div>
 
-      {/* Response message */}
-      {uiMessage.text && (
-        <div className="mb-4">
-          <div className={toastClass} role="status" aria-live="polite">
-            {uiMessage.text}
-          </div>
-        </div>
-      )}
-
-      {/* TABS CONTROL LAYOUT */}
-      <div className="flex border-b mb-6 bg-white rounded-t-lg p-1 shadow-sm">
-        {tabs.map((tab) => {
-          const active = activeTab === tab;
-          return (
-            <button
-              key={tab}
-              type="button"
-              onClick={() => {
-                setActiveTab(tab);
-                setUiMessage({ kind: "info", text: "" });
-              }}
-              className={`flex-1 py-2.5 text-sm font-bold uppercase rounded-md transition-all ${
-                active
-                  ? "bg-blue-600 text-white shadow-md ring-1 ring-blue-200"
-                  : "text-gray-500 hover:text-gray-800 hover:bg-gray-100"
-              }`}
-              aria-pressed={active}
-            >
-              {tab === "commodity" ? "Commodity Master" : `${tab} Master`}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* TAB CONTENT */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-        {/* STATE FORM */}
-        {activeTab === "state" && (
-          <form onSubmit={handleCreateState} className="flex flex-col gap-4">
-            <h3 className="text-lg font-bold text-blue-700">
-              Add New Geographical State
-            </h3>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-semibold text-gray-600">
-                  State Name
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. Goa"
-                  value={stateForm.name}
-                  onChange={(e) =>
-                    setStateForm({ ...stateForm, name: e.target.value })
-                  }
-                  className="border p-2.5 rounded-lg w-full focus:outline-none focus:ring-2 focus:ring-blue-200"
-                  disabled={uploading}
-                />
+      <main className="min-w-0 space-y-5">
+          <section className="rounded-lg border border-border bg-card p-4 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="text-xl font-bold text-foreground">{activeMaster.label}</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Create, search, edit and delete {activeMasterName.toLowerCase()} records in one workspace.
+                </p>
               </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-semibold text-gray-600">
-                  State Code (Unique)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. GA"
-                  maxLength={2}
-                  value={stateForm.code}
-                  onChange={(e) =>
-                    setStateForm({ ...stateForm, code: e.target.value })
-                  }
-                  className="border p-2.5 rounded-lg w-full uppercase focus:outline-none focus:ring-2 focus:ring-blue-200"
-                  disabled={uploading}
-                />
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={uploading}
-              className="w-full md:w-48 self-end bg-blue-600 text-white font-bold p-2.5 rounded-lg mt-2 shadow hover:bg-blue-700 disabled:opacity-60"
-            >
-              Save State Master
-            </button>
-          </form>
-        )}
-
-        {/* DISTRICT FORM */}
-        {activeTab === "district" && (
-          <form onSubmit={handleCreateDistrict} className="flex flex-col gap-4">
-            <h3 className="text-lg font-bold text-blue-700">
-              Add New District Boundary
-            </h3>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-semibold text-gray-600">
-                  Select Parent State
-                </label>
-                <SearchableSelect
-                  placeholder="-- Choose State --"
-                  value={districtForm.parent_code}
-                  options={states.map((st) => ({
-                    value: st.code,
-                    label: `${st.name} (${st.code})`,
-                  }))}
-                  onChange={(val) =>
-                    setDistrictForm({
-                      ...districtForm,
-                      parent_code: val,
-                    })
-                  }
-                  disabled={uploading}
-                  inputClassName="border p-2.5 rounded-lg bg-white w-full focus:outline-none focus:ring-2 focus:ring-blue-200"
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-semibold text-gray-600">
-                  District Name
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. South Goa"
-                  value={districtForm.name}
-                  onChange={(e) =>
-                    setDistrictForm({ ...districtForm, name: e.target.value })
-                  }
-                  className="border p-2.5 rounded-lg w-full focus:outline-none focus:ring-2 focus:ring-blue-200"
-                  disabled={uploading}
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-semibold text-gray-600">
-                  District Operational Code (Optional)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. SGA"
-                  value={districtForm.code}
-                  onChange={(e) =>
-                    setDistrictForm({ ...districtForm, code: e.target.value })
-                  }
-                  className="border p-2.5 rounded-lg w-full uppercase focus:outline-none focus:ring-2 focus:ring-blue-200"
-                  disabled={uploading}
-                />
-              </div>
-            </div>
-
-            <button
-              type="submit"
-              disabled={uploading}
-              className="w-full md:w-48 self-end bg-blue-600 text-white font-bold p-2.5 rounded-lg mt-2 shadow hover:bg-blue-700 disabled:opacity-60"
-            >
-              Map District Master
-            </button>
-          </form>
-        )}
-
-        {/* COMMODITY FORM */}
-        {activeTab === "commodity" && (
-          <form
-            onSubmit={handleCreateCommodity}
-            className="flex flex-col gap-4"
-          >
-            <h3 className="text-lg font-bold text-blue-700">
-              Add Code Dictionary Entry
-            </h3>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-semibold text-gray-600">
-                  Code (Unique)
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. HSD or BOXN"
-                  value={commodityForm.code}
-                  onChange={(e) =>
-                    setCommodityForm({
-                      ...commodityForm,
-                      code: e.target.value,
-                    })
-                  }
-                  className="border p-2.5 rounded-lg w-full uppercase focus:outline-none focus:ring-2 focus:ring-blue-200"
-                  disabled={uploading}
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-semibold text-gray-600">
-                  Full Name / Description
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. High Speed Diesel"
-                  value={commodityForm.full_name}
-                  onChange={(e) =>
-                    setCommodityForm({
-                      ...commodityForm,
-                      full_name: e.target.value,
-                    })
-                  }
-                  className="border p-2.5 rounded-lg w-full focus:outline-none focus:ring-2 focus:ring-blue-200"
-                  disabled={uploading}
-                />
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="text-xs font-semibold text-gray-600">
-                  Type
-                </label>
-                <select
-                  value={commodityForm.type}
-                  onChange={(e) =>
-                    setCommodityForm({
-                      ...commodityForm,
-                      type: e.target.value,
-                    })
-                  }
-                  className="border p-2.5 rounded-lg w-full bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
-                  disabled={uploading}
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={saving}
+                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-foreground hover:bg-muted disabled:opacity-50"
                 >
-                  <option value="Commodity">Commodity</option>
-                  <option value="Rake CMDT">Rake CMDT</option>
-                  <option value="Wagon Type">Wagon Type</option>
-                </select>
+                  <Upload className="h-4 w-4" />
+                  Import
+                </button>
+                <button
+                  type="button"
+                  onClick={exportRows}
+                  disabled={rows.length === 0}
+                  className="inline-flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-foreground hover:bg-muted disabled:opacity-50"
+                >
+                  <Download className="h-4 w-4" />
+                  Export
+                </button>
+              </div>
+              <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleImport} className="hidden" />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {activeMaster.importHeaders.map((header) => (
+                <span key={header} className="rounded border border-primary/20 bg-primary/10 px-2 py-1 font-mono text-xs text-primary">
+                  {header}
+                </span>
+              ))}
+            </div>
+          </section>
+
+          {message.text && (
+            <div className={`rounded-lg border px-3 py-2 text-sm ${messageClass}`}>
+              {message.text}
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} className="rounded-lg border border-border bg-card p-4 shadow-sm">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-semibold text-foreground">
+                  {editingId ? `Edit ${activeMasterName}` : `Create ${activeMasterName}`}
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Dropdown values are loaded from master records.
+                </p>
+              </div>
+              {editingId && (
+                <button
+                  type="button"
+                  onClick={() => resetFormFor(activeMaster)}
+                  className="rounded-lg border border-border px-3 py-2 text-sm text-foreground hover:bg-muted"
+                >
+                  Cancel Edit
+                </button>
+              )}
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {activeMaster.fields.map((field) => (
+                <MasterField
+                  key={field.name}
+                  field={field}
+                  value={form[field.name] || ""}
+                  form={form}
+                  references={references}
+                  disabled={saving}
+                  onChange={(value) =>
+                    setForm((prev) => updateDependentForm(prev, activeKey, field.name, value))
+                  }
+                />
+              ))}
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <button
+                type="submit"
+                disabled={saving}
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
+              >
+                <Plus className="h-4 w-4" />
+                {editingId ? `Update ${activeMasterName}` : `Create ${activeMasterName}`}
+              </button>
+            </div>
+          </form>
+
+          <section className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+              <div>
+                <h3 className="font-semibold text-foreground">Existing {activeMasterName} Records</h3>
+                <p className="text-xs text-muted-foreground">{total} record(s)</p>
+              </div>
+              <div className="flex w-full items-center gap-2 rounded-lg border border-border bg-muted px-3 py-2 sm:w-80">
+                <Search className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                <input
+                  value={search}
+                  onChange={(event) => {
+                    setSearch(event.target.value);
+                    setPage(1);
+                  }}
+                  placeholder="Search by name/code"
+                  className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+                />
               </div>
             </div>
 
-            <button
-              type="submit"
-              disabled={uploading}
-              className="w-full md:w-48 self-end bg-blue-600 text-white font-bold p-2.5 rounded-lg mt-2 shadow hover:bg-blue-700 disabled:opacity-60"
-            >
-              Register Code
-            </button>
-          </form>
-        )}
-      </div>
+            <div className="max-h-[520px] overflow-auto">
+              <table className="w-full min-w-[720px] text-sm">
+                <thead className="sticky top-0 z-10">
+                  <tr className="bg-blue-700 text-white">
+                    {activeMaster.columns.map((column) => (
+                      <th key={column} className="whitespace-nowrap px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide">
+                        {columnLabel(column)}
+                      </th>
+                    ))}
+                    <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    [...Array(5)].map((_, rowIndex) => (
+                      <tr key={rowIndex} className="border-b border-border/50">
+                        {[...Array(activeMaster.columns.length + 1)].map((__, colIndex) => (
+                          <td key={colIndex} className="px-4 py-3">
+                            <div className="h-4 animate-pulse rounded bg-muted" />
+                          </td>
+                        ))}
+                      </tr>
+                    ))
+                  ) : rows.length === 0 ? (
+                    <tr>
+                      <td colSpan={activeMaster.columns.length + 1} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                        No {activeMasterName.toLowerCase()} records found.
+                      </td>
+                    </tr>
+                  ) : (
+                    rows.map((row) => (
+                      <tr key={row.id} className="border-b border-border/50 bg-white hover:bg-blue-50/60">
+                        {activeMaster.columns.map((column) => (
+                          <td key={column} className="px-4 py-3 text-foreground">
+                            {row[column] || "-"}
+                          </td>
+                        ))}
+                        <td className="px-4 py-3">
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => editRow(row)}
+                              className="rounded border border-border p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                              title="Edit"
+                            >
+                              <Edit2 className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => deleteRow(row)}
+                              className="rounded border border-border p-1.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                              title="Delete"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border bg-muted/30 px-4 py-3">
+              <span className="text-xs text-muted-foreground">
+                Page {page} of {totalPages} - {total} record(s)
+              </span>
+              <div className="flex gap-2">
+                <PageButton disabled={page === 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Prev</PageButton>
+                <PageButton disabled={page === totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>Next</PageButton>
+              </div>
+            </div>
+          </section>
+      </main>
     </div>
   );
+}
+
+function MasterField({ field, value, form, references, disabled, onChange }) {
+  if (field.type === "select") {
+    return (
+      <label className="block">
+        <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {field.label}
+        </span>
+        <SearchableSelect
+          value={value}
+          onChange={onChange}
+          options={selectOptions(field, form, references)}
+          placeholder={`Select ${field.label}`}
+          disabled={disabled}
+          inputClassName="bg-background"
+        />
+      </label>
+    );
+  }
+
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {field.label}
+      </span>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={field.placeholder}
+        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary"
+        disabled={disabled}
+      />
+    </label>
+  );
+}
+
+function PageButton({ children, disabled, onClick }) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="rounded border border-border bg-muted px-3 py-1 text-xs text-foreground hover:bg-muted/80 disabled:opacity-40"
+    >
+      {children}
+    </button>
+  );
+}
+
+function selectOptions(field, form, references) {
+  if (field.source === "states") return toOptions(references.states);
+  if (field.source === "zones") return toOptions(references.zones);
+  if (field.source === "districts") {
+    const state = String(form.state || "").trim().toUpperCase();
+    const rows = state
+      ? references.districts.filter((row) => row.parent_code === state)
+      : references.districts;
+    return toOptions(rows);
+  }
+  if (field.source === "divisions") {
+    const zone = String(form.zone || "").trim().toUpperCase();
+    const rows = zone
+      ? references.divisions.filter((row) => row.parent_code === zone)
+      : references.divisions;
+    return toOptions(rows);
+  }
+  return [];
+}
+
+function toOptions(rows) {
+  return rows.map((row) => ({
+    value: row.code,
+    label: `${row.name || row.code} (${row.code})`,
+  }));
+}
+
+function updateDependentForm(prev, activeKey, fieldName, rawValue) {
+  const value = normalizeFieldValue(fieldName, rawValue);
+  const next = { ...prev, [fieldName]: value };
+  if (activeKey === "station" && fieldName === "state") next.district = "";
+  if (activeKey === "station" && fieldName === "zone") next.division = "";
+  return next;
+}
+
+function requireFields(form, fields) {
+  const missing = fields
+    .filter(([name]) => !String(form[name] || "").trim())
+    .map(([, label]) => label);
+  return missing.length ? `${missing.join(", ")} required.` : "";
+}
+
+function normalizePayload(form, master) {
+  return Object.fromEntries(
+    master.fields.map((field) => [
+      field.name,
+      normalizeFieldValue(field.name, form[field.name]),
+    ])
+  );
+}
+
+function normalizeFieldValue(fieldName, value) {
+  const text = String(value || "").trim();
+  return CODE_FIELDS.has(fieldName) ? text.toUpperCase() : text;
+}
+
+function columnLabel(column) {
+  return column
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function buildPayloadFromImport(row, master) {
+  const payload = {};
+  for (const [fieldName, headers] of Object.entries(master.importMap)) {
+    payload[fieldName] = firstImportValue(row, headers);
+  }
+  return payload;
+}
+
+function firstImportValue(row, headers) {
+  for (const header of headers) {
+    const value =
+      row[header] ??
+      row[header.toLowerCase()] ??
+      row[header.toUpperCase()] ??
+      row[columnLabel(header)];
+    if (value !== undefined && value !== null && String(value).trim() !== "") {
+      return String(value).trim();
+    }
+  }
+  return "";
 }

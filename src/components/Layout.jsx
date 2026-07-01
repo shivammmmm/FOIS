@@ -1,13 +1,23 @@
-import { useState } from "react";
-import { Link, useLocation, Outlet } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useLocation, Outlet, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import {
   Train,
   ArrowDownToLine,
   ArrowUpFromLine,
+  BarChart3,
   Bell,
+  Boxes,
+  Building2,
+  ChevronDown,
+  GitBranch,
+  Globe,
+  Map,
+  MapPinned,
+  Package,
+  TrainFront,
   Upload,
-  FileText,
+  History,
   Settings,
   Menu,
   X,
@@ -17,18 +27,32 @@ import GlobalSearch from "./GlobalSearch";
 import NotificationBell from "./NotificationBell";
 import { useAuth } from "@/lib/AuthContext";
 
+const masterSubItems = [
+  { path: "/admin/master-management/state", label: "State Master", icon: MapPinned },
+  { path: "/admin/master-management/district", label: "District Master", icon: Map },
+  { path: "/admin/master-management/station", label: "Station Master", icon: TrainFront },
+  { path: "/admin/master-management/zone", label: "Zone Master", icon: Globe },
+  { path: "/admin/master-management/division", label: "Division Master", icon: GitBranch },
+  { path: "/admin/master-management/commodity", label: "Commodity Master", icon: Package },
+  { path: "/admin/master-management/company", label: "Company Master", icon: Building2 },
+  { path: "/admin/master-management/product", label: "Product Master", icon: Boxes },
+];
+
 // ⚙️ ADMINISTRATIVE NAVIGATION MATRIX (ADMIN SCALED ONLY)
 const adminNavItems = [
   {
     path: "/admin/master-management",
     label: "Master Management",
     icon: Settings,
+    children: masterSubItems,
   }, // Fixed & Connected inside Admin Block
   { path: "/admin/upload", label: "Upload Excel", icon: Upload },
-  { path: "/admin/freight", label: "Freight Records", icon: Train },
+  { path: "/admin/upload-history", label: "Upload History", icon: History },
+  { path: "/admin/fois-reports", label: "FOIS Reports", icon: Train },
+  { path: "/admin/inward-dashboard", label: "Inward Dashboard", icon: BarChart3 },
+  { path: "/admin/outward-dashboard", label: "Outward Dashboard", icon: BarChart3 },
   { path: "/admin/inward", label: "Inward Monitor", icon: ArrowDownToLine },
   { path: "/admin/outward", label: "Outward Monitor", icon: ArrowUpFromLine },
-  { path: "/admin/station-master", label: "Station Master", icon: FileText },
   { path: "/admin/users", label: "User Management", icon: Users },
   { path: "/admin/notifications", label: "Notifications", icon: Bell },
   { path: "/admin/settings", label: "Settings", icon: Settings },
@@ -36,7 +60,9 @@ const adminNavItems = [
 
 // 👥 STANDARD USER NAVIGATION MATRIX (CLEAN HOUSEKEEPING)
 const userNavItems = [
-  { path: "/search", label: "Search", icon: Train },
+  { path: "/inward-dashboard", label: "Inward Dashboard", icon: BarChart3 },
+  { path: "/outward-dashboard", label: "Outward Dashboard", icon: BarChart3 },
+  { path: "/fois-reports", label: "FOIS Reports", icon: Train },
   { path: "/inward-monitor", label: "Inward Monitor", icon: ArrowDownToLine }, // Connected seamlessly to User Routes
   { path: "/outward-monitor", label: "Outward Monitor", icon: ArrowUpFromLine }, // Connected seamlessly to User Routes
   { path: "/notification-preferences", label: "Notifications", icon: Bell },
@@ -44,10 +70,18 @@ const userNavItems = [
 
 export default function Layout() {
   const [open, setOpen] = useState(false);
+  const [masterMenuOpen, setMasterMenuOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   const { user, logout } = useAuth();
   const isAdmin = user?.role === "super_admin" || user?.role === "admin";
   const navItems = isAdmin ? adminNavItems : userNavItems;
+
+  useEffect(() => {
+    if (location.pathname.startsWith("/admin/master-management")) {
+      setMasterMenuOpen(true);
+    }
+  }, [location.pathname]);
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
@@ -94,8 +128,113 @@ export default function Layout() {
 
         {/* Nav Items */}
         <nav className="flex-1 py-4 overflow-y-auto">
-          {navItems.map(({ path, label, icon: Icon }) => {
-            const active = location.pathname === path;
+          {navItems.map(({ path, label, icon: Icon, children }) => {
+            const active = children
+              ? location.pathname.startsWith(path)
+              : location.pathname === path;
+
+            if (children) {
+              return (
+                <div key={path} className="mb-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (active) {
+                        setMasterMenuOpen(true);
+                        return;
+                      }
+
+                      const nextOpen = !masterMenuOpen;
+                      setMasterMenuOpen(nextOpen);
+                      if (nextOpen) navigate(children[0].path);
+                    }}
+                    className={cn(
+                      "flex w-[calc(100%-1rem)] items-center gap-3 mx-2 px-3 py-3 rounded-lg transition-all duration-200",
+                      "text-sm font-semibold",
+                      active
+                        ? "bg-primary/20 text-white border border-primary/30 shadow-sm"
+                        : "hover:bg-sidebar-accent hover:text-white"
+                    )}
+                    style={{ color: active ? "white" : "hsl(215,20%,70%)" }}
+                    aria-expanded={masterMenuOpen}
+                  >
+                    <span
+                      className={cn(
+                        "flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg transition-colors",
+                        active ? "bg-primary/20" : "bg-white/5"
+                      )}
+                    >
+                      <Icon
+                        className={cn(
+                          "w-4 h-4 flex-shrink-0 transition-colors",
+                          active && "text-primary"
+                        )}
+                        style={{ color: active ? "hsl(217,91%,65%)" : undefined }}
+                      />
+                    </span>
+                    <span className="min-w-0 flex-1 text-left">{label}</span>
+                    <ChevronDown
+                      className={cn(
+                        "h-4 w-4 flex-shrink-0 transition-transform duration-200",
+                        masterMenuOpen && "rotate-180"
+                      )}
+                    />
+                  </button>
+                  <div
+                    className={cn(
+                      "overflow-hidden transition-all duration-300 ease-out",
+                      masterMenuOpen ? "max-h-[28rem] opacity-100" : "max-h-0 opacity-0"
+                    )}
+                  >
+                    <div className="relative mx-2 mt-1 rounded-lg border border-white/10 bg-white/[0.04] px-2 py-2 shadow-inner">
+                      <span className="pointer-events-none absolute bottom-4 left-5 top-4 w-px rounded-full bg-blue-300/25" />
+                      {children.map((child) => {
+                        const childActive = location.pathname === child.path;
+                        const ChildIcon = child.icon;
+                        return (
+                          <Link
+                            key={child.path}
+                            to={child.path}
+                            onClick={() => setOpen(false)}
+                            className={cn(
+                              "group relative flex min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 pl-8 text-xs transition-all duration-200",
+                              childActive
+                                ? "bg-blue-600 text-white font-bold shadow-md shadow-blue-950/30"
+                                : "text-sidebar-foreground hover:bg-blue-500/10 hover:text-blue-100"
+                            )}
+                            style={{
+                              color: childActive ? "white" : "hsl(215,20%,68%)",
+                            }}
+                          >
+                            {childActive && (
+                              <span className="absolute bottom-2 left-0 top-2 w-1 rounded-r-full bg-blue-300" />
+                            )}
+                            <span
+                              className={cn(
+                                "absolute left-[0.9rem] z-10 h-2.5 w-2.5 rounded-full border-2 transition-colors duration-200",
+                                childActive
+                                  ? "border-white bg-white"
+                                  : "border-blue-300/60 bg-sidebar-background group-hover:border-blue-200 group-hover:bg-blue-200"
+                              )}
+                            />
+                            <ChildIcon
+                              className={cn(
+                                "h-3.5 w-3.5 flex-shrink-0 transition-colors duration-200",
+                                childActive
+                                  ? "text-white"
+                                  : "text-slate-400 group-hover:text-blue-200"
+                              )}
+                            />
+                            <span className="min-w-0 flex-1 truncate">{child.label}</span>
+                          </Link>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
             return (
               <Link
                 key={path}

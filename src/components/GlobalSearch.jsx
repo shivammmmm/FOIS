@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Search, Train, X } from "lucide-react";
 import { base44 } from "@/api/base44Client";
-import { getCommodityName, resolveCode } from "@/utils/railwayDictionary";
+import { getCommodityName } from "@/utils/railwayDictionary";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/AuthContext";
 
@@ -67,7 +67,8 @@ export default function GlobalSearch() {
             r.zone?.toLowerCase().includes(q) ||
             r.commodity?.toLowerCase().includes(q) ||
             getCommodityName(r.commodity)?.toLowerCase().includes(q) ||
-            r.rake_type?.toLowerCase().includes(q)
+            r.rake_commodity_code?.toLowerCase().includes(q) ||
+            r.rake_cmdt?.toLowerCase().includes(q)
         );
 
         if (onlyMyStations) {
@@ -93,7 +94,7 @@ export default function GlobalSearch() {
     setOpen(false);
     setQuery("");
 
-    const base = `${isAdmin ? "/admin/freight" : "/search"}?odr=${
+    const base = `${isAdmin ? "/admin/fois-reports" : "/fois-reports"}?odr=${
       record.odr_number
     }`;
     const next = onlyMyStations ? `${base}&only_my_stations=true` : base;
@@ -139,7 +140,7 @@ export default function GlobalSearch() {
                 </div>
                 <div className="text-xs text-muted-foreground">
                   {r.division} · {getCommodityName(r.commodity)} ·{" "}
-                  {resolveCode(r.rake_type)}
+                  {r.rake_commodity_code || r.rake_cmdt || ""}
                 </div>
               </div>
               <MovementBadge type={r.movement_type} />

@@ -10,14 +10,14 @@ export default function UploadCenter() {
   const [uploadResult, setUploadResult] = useState(null);
   const [logs, setLogs] = useState([]);
   const [loadingLogs, setLoadingLogs] = useState(true);
-  const fileRef = useRef();
+  const fileRef = useRef(/** @type {HTMLInputElement | null} */ (null));
 
   useEffect(() => { loadLogs(); }, []);
 
   const loadLogs = async () => {
     setLoadingLogs(true);
     try {
-      const data = await base44.entities.UploadLog.list('-created_date', 30);
+      const data = await base44.admin.uploadHistory.list({ limit: 30 });
       setLogs(data);
     } catch (e) { console.error(e); }
     setLoadingLogs(false);
@@ -53,7 +53,11 @@ export default function UploadCenter() {
   };
 
   const handleDeleteLog = async (log) => {
-    await base44.entities.UploadLog.delete(log.id);
+    const confirmed = window.confirm(
+      'Delete uploaded file?\n\nThis will permanently delete all imported records from this upload.'
+    );
+    if (!confirmed) return;
+    await base44.admin.uploadHistory.delete(log.id);
     loadLogs();
   };
 

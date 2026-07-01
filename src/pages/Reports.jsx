@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { FileText, Download, Loader2, Filter, Save } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { getCommodityName, resolveCode } from '@/utils/railwayDictionary';
+import { getCommodityName } from '@/utils/railwayDictionary';
 import StatusBadge from '@/components/StatusBadge';
 import { useAuth } from '@/lib/AuthContext';
 import FreightDetailsModal from '@/components/FreightDetailsModal';
@@ -83,8 +83,7 @@ export default function Reports() {
         'From Station': r.station_from || '',
         'To Station': r.station_to || '',
         'Commodity': getCommodityName(r.commodity) || '',
-        'Rake Type': r.rake_type || '',
-        'Rake Type (Full)': resolveCode(r.rake_type) || '',
+        'Rake CMDT': r.rake_commodity_code || r.rake_cmdt || '',
         'Wagons': r.wagons || '',
         'Arrival Date': r.arrival_date || '',
         'Departure Date': r.departure_date || '',
@@ -207,7 +206,7 @@ export default function Reports() {
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground">{h}</th>
                   ))
                 ) : (
-                  ['ODR No.', 'Zone', 'Division', 'Route', 'Commodity', 'Rake Type', 'Wagons', 'Arrival', 'Movement', 'Status'].map(h => (
+                  ['ODR No.', 'Zone', 'Division', 'Route', 'Commodity', 'Rake CMDT', 'Wagons', 'Arrival', 'Movement', 'Status'].map(h => (
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground whitespace-nowrap">{h}</th>
                   ))
                 )}
@@ -248,7 +247,7 @@ export default function Reports() {
                       <span className="bg-muted px-1.5 py-0.5 rounded">{r.station_to || '?'}</span>
                     </td>
                     <td className="px-4 py-3 text-foreground">{getCommodityName(r.commodity) || '—'}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{r.rake_type || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{r.rake_commodity_code || r.rake_cmdt || '—'}</td>
                     <td className="px-4 py-3 text-center text-foreground">{r.wagons || '—'}</td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{r.arrival_date || '—'}</td>
                     <td className="px-4 py-3"><StatusBadge status={r.movement_type} /></td>

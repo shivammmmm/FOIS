@@ -10,12 +10,14 @@ import {
   createRecord,
   createRecords,
   createUser,
+  deleteUploadBatch,
   deleteRecord,
   ensureSuperAdminExists,
   findUserById,
   findUserByIdentifier,
   getStorageStatus,
   initializeStorage,
+  listUploadHistory,
   listUsers,
   listRecords,
   updateUserRole,
@@ -35,6 +37,11 @@ import {
   upsertUnmappedStationCodes,
 } from "./utils/stationMaster.js";
 import {
+  ensureCommodityCatalogTable,
+  ensureGenericMasterTable,
+  ensureStationMasterTable,
+} from "./utils/masterCatalogMigration.js";
+import {
   compareODRwithIndents,
   generateBatchId,
   getIndentRowRejectionReason,
@@ -49,6 +56,38 @@ function normalizeCommodityCode(code) {
   return String(code || "")
     .trim()
     .toUpperCase();
+}
+
+const WAGON_STOCK_PREFIX_RE = /^(BOX|BOB|BOS|BCN|BTP|NMG)/;
+const WAGON_STOCK_CODES = new Set([
+  "BCN",
+  "BCNA",
+  "BCNAHSM1",
+  "BCNHL",
+  "BOBR",
+  "BOBRN",
+  "BOBRNHSM1",
+  "BOBRNHSM2",
+  "BOSM",
+  "BOST",
+  "BOXCL",
+  "BOXN",
+  "BOXNEL",
+  "BOXNHA",
+  "BOXNHL",
+  "BOXNHL25T",
+  "BOXNR",
+  "BTPN",
+  "NMG",
+  "NMGH",
+]);
+
+function isWagonStockType(value) {
+  const normalized = normalizeCommodityCode(value);
+  if (!normalized) return false;
+  if (/^\d+$/.test(normalized)) return true;
+  if (WAGON_STOCK_CODES.has(normalized)) return true;
+  return WAGON_STOCK_PREFIX_RE.test(normalized);
 }
 
 async function bulkLookupCommodityMasters(codes, type = 'Commodity') {
@@ -66,32 +105,21 @@ async function bulkLookupCommodityMasters(codes, type = 'Commodity') {
     return {};
   }
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS commodity_master (
-      id TEXT PRIMARY KEY,
-      commodity_code TEXT UNIQUE NOT NULL,
-      commodity_name TEXT,
-      type TEXT,
-      commodity_group_code TEXT,
-      commodity_group_name TEXT,
-      is_active BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
+  await ensureCommodityCatalogTable(pool);
 
   const result = await pool.query(
-    `SELECT commodity_code, commodity_name
+    `SELECT code, name, commodity_code, commodity_name
      FROM commodity_master
-     WHERE commodity_code = ANY($1::text[]) AND type = $2`,
+     WHERE code = ANY($1::text[]) AND type = $2`,
     [unique, type]
   );
 
   const map = {};
   for (const row of result.rows) {
-    map[normalizeCommodityCode(row.commodity_code)] = {
-      commodity_code: normalizeCommodityCode(row.commodity_code),
-      commodity_name: row.commodity_name,
+    const code = normalizeCommodityCode(row.code || row.commodity_code);
+    map[code] = {
+      commodity_code: code,
+      commodity_name: row.name || row.commodity_name,
       commodity_group: null,
     };
   }
@@ -109,30 +137,54 @@ async function enrichCommodityFields(records) {
   const commodityCodes = rows
     .map((r) => normalizeCommodityCode(r.commodity))
     .filter(Boolean);
+  const productCodes = rows
+    .map((r) =>
+      normalizeCommodityCode(r.product || r.product_code || r.raw_data?.Product)
+    )
+    .filter(Boolean);
+  const companyCodes = rows
+    .map((r) =>
+      normalizeCommodityCode(r.company || r.company_code || r.raw_data?.Company || r.raw_data?.cnsr)
+    )
+    .filter(Boolean);
   const rakeCommodityCodes = rows
     .map((r) => normalizeCommodityCode(r.rake_cmdt))
     .filter(Boolean);
   const wagonTypeCodes = rows
-    .map((r) => normalizeCommodityCode(r.rake_type))
+    .map((r) => normalizeCommodityCode(r.wagon_type))
     .filter(Boolean);
 
-  const [commodityMap, rakeCommodityMap, wagonTypeMap] = await Promise.all([
+  const [commodityMap, productMap, companyMap, rakeCommodityMap, wagonTypeMap] = await Promise.all([
     bulkLookupCommodityMasters(commodityCodes, 'Commodity'),
+    bulkLookupCommodityMasters(productCodes, 'Product'),
+    bulkLookupCommodityMasters(companyCodes, 'Company'),
     bulkLookupCommodityMasters(rakeCommodityCodes, 'Rake CMDT'),
     bulkLookupCommodityMasters(wagonTypeCodes, 'Wagon Type'),
   ]);
 
   return rows.map((r) => {
     const c = normalizeCommodityCode(r.commodity);
+    const rawRakeType = normalizeCommodityCode(r.rake_type);
+    const product = normalizeCommodityCode(r.product || r.product_code || r.raw_data?.Product);
+    const company = normalizeCommodityCode(r.company || r.company_code || r.raw_data?.Company || r.raw_data?.cnsr);
     const rake = normalizeCommodityCode(r.rake_cmdt);
-    const wagon = normalizeCommodityCode(r.rake_type);
+    const wagon = normalizeCommodityCode(r.wagon_type || (isWagonStockType(rawRakeType) ? rawRakeType : ""));
+    const businessRakeType =
+      product || (!isWagonStockType(rawRakeType) && rawRakeType !== rake ? rawRakeType : "");
 
     const commodityEnriched = c ? commodityMap[c] : null;
+    const productEnriched = product ? productMap[product] : null;
+    const companyEnriched = company ? companyMap[company] : null;
     const rakeEnriched = rake ? rakeCommodityMap[rake] : null;
     const wagonEnriched = wagon ? wagonTypeMap[wagon] : null;
 
     return {
       ...r,
+      product_code: product || r.product_code,
+      product_name: productEnriched?.commodity_name || r.product_name || null,
+      company: company || r.company || null,
+      company_code: company || r.company_code,
+      company_name: companyEnriched?.commodity_name || r.company_name || r.raw_data?.Company || company || null,
       commodity_code: c || r.commodity_code,
       commodity_name: commodityEnriched?.commodity_name || null,
       commodity_group: null,
@@ -141,7 +193,10 @@ async function enrichCommodityFields(records) {
       rake_commodity_name: rakeEnriched?.commodity_name || null,
       rake_commodity_group: null,
 
-      rake_type_name: wagonEnriched?.commodity_name || null,
+      rake_type: businessRakeType,
+      rake_type_name: productEnriched?.commodity_name || r.rake_type_name || r.product_name || null,
+      wagon_type: wagon || r.wagon_type || null,
+      wagon_type_name: wagonEnriched?.commodity_name || r.wagon_type_name || null,
     };
   });
 }
@@ -304,6 +359,64 @@ async function enrichStationFields(records, batchId) {
   }
 
   return enriched;
+}
+
+async function createMovementPreferenceNotifications(records, batchId) {
+  const groups = new Map();
+
+  for (const record of Array.isArray(records) ? records : []) {
+    const movementType = record.movement_type || "Unknown";
+    const stationCode =
+      movementType === "Outward"
+        ? record.station_from
+        : record.station_to || record.station_from;
+    if (!stationCode) continue;
+
+    const key = [movementType, stationCode].join("|");
+    const group = groups.get(key) || {
+      movementType,
+      stationCode,
+      records: [],
+      exemplar: record,
+    };
+    group.records.push(record);
+    groups.set(key, group);
+  }
+
+  for (const group of groups.values()) {
+    const type = group.movementType === "Outward" ? "Departure" : "Arrival";
+    const movement = group.exemplar || {};
+    const details = [
+      movement.company_name || movement.company_code || movement.company,
+      movement.product_name || movement.product_code || movement.product,
+      movement.rake_commodity_name || movement.rake_commodity_code || movement.rake_cmdt,
+    ]
+      .filter(Boolean)
+      .join(", ");
+
+    try {
+      await createNotification({
+        movement_reference: `${batchId}:${group.movementType}:${group.stationCode}`,
+        station_code: group.stationCode,
+        notification_type: "NewRecord",
+        type,
+        title: `${group.records.length} ${group.movementType} FOIS record(s)`,
+        message: `Batch ${batchId} has ${group.records.length} ${group.movementType.toLowerCase()} record(s) for station ${group.stationCode}${details ? ` (${details})` : ""}.`,
+        severity: "info",
+        related_odr: movement.odr_number || null,
+        related_division: movement.division || null,
+        batch_id: batchId,
+        data: { movement },
+      });
+    } catch (error) {
+      console.error("[NotificationDelivery] in-app notification failed", {
+        batchId,
+        movement_type: group.movementType,
+        station_code: group.stationCode,
+        error: error?.message,
+      });
+    }
+  }
 }
 
 app.use(cors());
@@ -772,6 +885,33 @@ app.post(
   }
 );
 
+app.get(
+  "/api/admin/upload-history",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (req, res, next) => {
+    try {
+      const limit = Math.min(Number(req.query.limit || 100) || 100, 500);
+      res.json(await listUploadHistory({ limit }));
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+app.delete(
+  "/api/admin/upload-history/:id",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (req, res, next) => {
+    try {
+      res.json(await deleteUploadBatch(req.params.id));
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 app.post(
   "/api/admin/uploads/excel",
   requireAuth,
@@ -926,6 +1066,12 @@ app.post(
 
         await createRecords("FreightMovement", parsedRecords);
         insertedRecords = parsedRecords.length;
+        await createMovementPreferenceNotifications(parsedRecords, batchId).catch((error) => {
+          console.error("[NotificationDelivery] movement preference notifications failed", {
+            batchId,
+            error: error?.message,
+          });
+        });
 
         if (duplicatesFound > 0) {
           const eventKey = `DuplicateODR|${batchId}|${duplicatesFound}`;
@@ -1021,6 +1167,12 @@ app.post(
         (acc, s) => acc + (s.validRows || 0),
         0
       );
+      const recordsParsed = sheetWiseStats.reduce(
+        (acc, s) => acc + (s.totalRows || 0),
+        0
+      );
+      const recordsValid = parsedRecords.length;
+      const recordsFailed = Math.max(recordsParsed - recordsValid, 0);
       for (const s of sheetWiseStats) {
         const share =
           totalValidAcrossSheets > 0
@@ -1030,11 +1182,24 @@ app.post(
         s.updatedRows = 0;
       }
 
+      const uploadTime = new Date().toISOString();
+      const uploadStatus =
+        processedSheets > 0
+          ? failedSheets > 0
+            ? "Partial"
+            : "Completed"
+          : "Failed";
       const logEntry = {
         batch_id: batchId,
+        original_file_name: fileName,
         file_name: fileName,
         file_type: fileType,
         uploaded_by: req.auth?.username || "Admin",
+        uploaded_at: uploadTime,
+        record_count: insertedRecords,
+        records_parsed: recordsParsed,
+        records_valid: recordsValid,
+        records_failed: recordsFailed,
         totalSheets,
         processedSheets,
         failedSheets,
@@ -1043,13 +1208,8 @@ app.post(
         sheetWiseStats,
         duplicates_found: duplicatesFound,
         missing_odrs_found: missingODRs,
-        status:
-          processedSheets > 0
-            ? failedSheets > 0
-              ? "Partial"
-              : "Success"
-            : "Failed",
-        upload_time: new Date().toISOString(),
+        status: uploadStatus,
+        upload_time: uploadTime,
       };
 
       await createRecord("UploadLog", logEntry);
@@ -1064,14 +1224,21 @@ app.post(
     } catch (error) {
       const { fileName, fileType } = req.body || {};
       if (fileName && fileType) {
+        const uploadTime = new Date().toISOString();
         await createRecord("UploadLog", {
           batch_id: generateBatchId(),
+          original_file_name: fileName,
           file_name: fileName,
           file_type: fileType,
           uploaded_by: req.auth?.username || "Admin",
+          uploaded_at: uploadTime,
+          record_count: 0,
+          records_parsed: 0,
+          records_valid: 0,
+          records_failed: 0,
           status: "Failed",
           error_details: error.message,
-          upload_time: new Date().toISOString(),
+          upload_time: uploadTime,
         }).catch(() => undefined);
       }
       next(error);
@@ -1808,6 +1975,46 @@ app.post(
   }
 );
 
+app.get(
+  "/api/masters/commodities",
+  requireAuth,
+  async (req, res) => {
+    try {
+      const type = String(req.query.type || "Commodity").trim();
+      const search = String(req.query.search || "").trim();
+      const result = await withCatalogPool(async (pool) => {
+        await ensureCommodityCatalogTable(pool);
+        const params = [type];
+        let where = "";
+        if (search) {
+          params.push(`%${search}%`);
+          where = "AND (code ILIKE $2 OR name ILIKE $2 OR commodity_code ILIKE $2 OR commodity_name ILIKE $2)";
+        }
+        return pool.query(
+          `SELECT id, code, name, commodity_code, commodity_name, type, is_active
+             FROM commodity_master
+            WHERE type = $1 ${where}
+            ORDER BY code ASC`,
+          params
+        );
+      });
+      return res.json({
+        items: result.rows.map((row) => ({
+          id: row.id,
+          code: row.code || row.commodity_code,
+          full_name: row.name || row.commodity_name,
+          name: row.name || row.commodity_name,
+          type: row.type,
+          active: row.is_active,
+        })),
+        count: result.rowCount,
+      });
+    } catch (error) {
+      return res.status(500).json({ error: error?.message || "Failed to load commodities" });
+    }
+  }
+);
+
 app.post(
   "/api/masters/commodities",
   requireAuth,
@@ -1833,12 +2040,13 @@ app.post(
         "postgresql://fois_user:fois_password@localhost:5432/fois_db";
 
       seederPool = new Pool({ connectionString: databaseUrl });
+      await ensureCommodityCatalogTable(seederPool);
 
       const normalizedCode = String(code).trim().toUpperCase();
       const normalizedName = String(full_name).trim();
 
       const checkExist = await seederPool.query(
-        "SELECT id FROM commodity_master WHERE UPPER(commodity_code) = $1 AND type = $2 LIMIT 1",
+        "SELECT id FROM commodity_master WHERE UPPER(code) = $1 AND type = $2 LIMIT 1",
         [normalizedCode, type]
       );
 
@@ -1859,9 +2067,14 @@ app.post(
 
       const result = await seederPool.query(
         `INSERT INTO commodity_master
-        (id, commodity_code, commodity_name, type, commodity_group_code, commodity_group_name, is_active, created_at, updated_at)
+        (id, code, name, commodity_code, commodity_name, type, commodity_group_code, commodity_group_name, is_active, created_at, updated_at)
        VALUES
-        ($1, $2, $3, $4, 'GEN', 'GENERAL', TRUE, NOW(), NOW())
+        ($1, $2, $3, $2, $3, $4, NULL, NULL, TRUE, NOW(), NOW())
+       ON CONFLICT (code, type) DO UPDATE SET
+        name = EXCLUDED.name,
+        commodity_code = EXCLUDED.commodity_code,
+        commodity_name = EXCLUDED.commodity_name,
+        updated_at = NOW()
        RETURNING *`,
         [
           String(nextId),
@@ -1874,8 +2087,8 @@ app.post(
       const row = result.rows[0];
       return res.status(201).json({
         id: row.id,
-        code: row.commodity_code,
-        full_name: row.commodity_name,
+        code: row.code || row.commodity_code,
+        full_name: row.name || row.commodity_name,
         type: row.type,
       });
     } catch (error) {
@@ -1894,6 +2107,449 @@ app.post(
           // ignore
         }
       }
+    }
+  }
+);
+
+const MASTER_CATALOGS = {
+  state: { table: "state_master", kind: "generic", label: "State" },
+  district: { table: "district_master", kind: "generic", label: "District" },
+  zone: { table: "zone_master", kind: "generic", label: "Zone" },
+  division: { table: "division_master", kind: "generic", label: "Division" },
+  station: { table: "station_master", kind: "station", label: "Station" },
+  commodity: { table: "commodity_master", kind: "typedCommodity", type: "Commodity", label: "Commodity" },
+  company: { table: "commodity_master", kind: "typedCommodity", type: "Company", label: "Company" },
+  product: { table: "commodity_master", kind: "typedCommodity", type: "Product", label: "Product" },
+};
+
+const MASTER_CATALOG_ALIASES = {
+  states: "state",
+  districts: "district",
+  zones: "zone",
+  divisions: "division",
+  stations: "station",
+  commodities: "commodity",
+};
+
+const MASTER_CATALOG_RESPONSE_KEYS = {
+  state: "states",
+  district: "districts",
+  zone: "zones",
+  division: "divisions",
+  station: "stations",
+  commodity: "commodity",
+  company: "company",
+  product: "product",
+};
+
+function resolveMasterKey(master) {
+  const key = String(master || "").trim().toLowerCase();
+  return MASTER_CATALOGS[key] ? key : MASTER_CATALOG_ALIASES[key];
+}
+
+async function withCatalogPool(callback) {
+  const { Pool } = await import("pg");
+  const databaseUrl =
+    process.env.DATABASE_URL ||
+    "postgresql://fois_user:fois_password@localhost:5432/fois_db";
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    return await callback(pool);
+  } finally {
+    await pool.end().catch(() => undefined);
+  }
+}
+
+async function ensureCatalogTable(pool, config) {
+  if (config.kind === "station") {
+    await ensureStationMasterTable(pool);
+    return;
+  }
+
+  if (config.kind === "typedCommodity") {
+    await ensureCommodityCatalogTable(pool);
+    return;
+  }
+
+  await ensureGenericMasterTable(pool, config.table);
+}
+
+function normalizeCatalogRow(config, row) {
+  if (config.kind === "station") {
+    return {
+      id: row.id,
+      code: row.station_code,
+      name: row.station_name,
+      station_code: row.station_code,
+      station_name: row.station_name,
+      district: row.district,
+      state: row.state,
+      division: row.division,
+      zone: row.zone,
+      active: row.is_active,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  }
+
+  if (config.kind === "typedCommodity") {
+    return {
+      id: row.id,
+      code: row.code || row.commodity_code,
+      name: row.name || row.commodity_name,
+      full_name: row.name || row.commodity_name,
+      type: row.type,
+      active: row.is_active,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  }
+
+  return row;
+}
+
+function catalogId(prefix, code) {
+  return `${prefix}_${String(code || "").trim().toUpperCase()}`;
+}
+
+async function listCatalogRecords(pool, masterKey, { search = "", limit = 10000, offset = 0 } = {}) {
+  const resolvedKey = resolveMasterKey(masterKey);
+  const config = MASTER_CATALOGS[resolvedKey];
+  if (!config) throw new Error("Unknown master");
+  await ensureCatalogTable(pool, config);
+
+  const params = [];
+  let where = "";
+  if (config.kind === "station") {
+    if (search) {
+      params.push(`%${search}%`);
+      where =
+        "WHERE station_code ILIKE $1 OR station_name ILIKE $1 OR district ILIKE $1 OR state ILIKE $1 OR division ILIKE $1 OR zone ILIKE $1";
+    }
+    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM station_master ${where}`, params);
+    const rows = await pool.query(
+      `SELECT * FROM station_master ${where} ORDER BY station_code ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
+    );
+    return { rows: rows.rows, total: count.rows[0]?.total || 0, config };
+  }
+
+  if (config.kind === "typedCommodity") {
+    params.push(config.type);
+    if (search) {
+      params.push(`%${search}%`);
+      where = "AND (code ILIKE $2 OR name ILIKE $2 OR commodity_code ILIKE $2 OR commodity_name ILIKE $2)";
+    }
+    const count = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM commodity_master WHERE type = $1 ${where}`,
+      params
+    );
+    const rows = await pool.query(
+      `SELECT * FROM commodity_master WHERE type = $1 ${where} ORDER BY code ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
+    );
+    return { rows: rows.rows, total: count.rows[0]?.total || 0, config };
+  }
+
+  if (search) {
+    params.push(`%${search}%`);
+    where = "WHERE code ILIKE $1 OR name ILIKE $1 OR parent_code ILIKE $1";
+  }
+  const count = await pool.query(`SELECT COUNT(*)::int AS total FROM ${config.table} ${where}`, params);
+  const rows = await pool.query(
+    `SELECT * FROM ${config.table} ${where} ORDER BY code ASC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset]
+  );
+  return { rows: rows.rows, total: count.rows[0]?.total || 0, config };
+}
+
+async function requireMasterReference(pool, tableName, code, label) {
+  const normalized = String(code || "").trim().toUpperCase();
+  if (!normalized) throw new Error(`${label} is required`);
+  const result = await pool.query(
+    `SELECT id FROM ${tableName} WHERE code = $1 LIMIT 1`,
+    [normalized]
+  );
+  if (result.rows.length === 0) {
+    throw new Error(`${label} '${normalized}' does not exist`);
+  }
+  return normalized;
+}
+
+async function requireDistrictReference(pool, stateCode, districtCode) {
+  const state = String(stateCode || "").trim().toUpperCase();
+  const district = String(districtCode || "").trim().toUpperCase();
+  if (!state) throw new Error("State is required");
+  if (!district) throw new Error("District is required");
+  const result = await pool.query(
+    `SELECT id FROM district_master WHERE code = $1 AND parent_code = $2 LIMIT 1`,
+    [district, state]
+  );
+  if (result.rows.length === 0) {
+    throw new Error(`District '${district}' does not exist for state '${state}'`);
+  }
+  return district;
+}
+
+async function requireDivisionReference(pool, zoneCode, divisionCode) {
+  const zone = String(zoneCode || "").trim().toUpperCase();
+  const division = String(divisionCode || "").trim().toUpperCase();
+  if (!zone) throw new Error("Zone is required");
+  if (!division) throw new Error("Division is required");
+  const result = await pool.query(
+    `SELECT id FROM division_master WHERE code = $1 AND parent_code = $2 LIMIT 1`,
+    [division, zone]
+  );
+  if (result.rows.length === 0) {
+    throw new Error(`Division '${division}' does not exist for zone '${zone}'`);
+  }
+  return division;
+}
+
+app.get(
+  "/api/masters/catalog",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (req, res) => {
+    try {
+      const type = String(req.query.type || "").trim();
+      const resolvedType = type ? resolveMasterKey(type) : null;
+      if (type && !resolvedType) return res.status(404).json({ error: "Unknown master" });
+      const keys = resolvedType ? [resolvedType] : Object.keys(MASTER_CATALOGS);
+      const data = await withCatalogPool(async (pool) => {
+        const entries = {};
+        for (const key of keys) {
+          if (!MASTER_CATALOGS[key]) continue;
+          const result = await listCatalogRecords(pool, key, {
+            search: String(req.query.search || "").trim(),
+            limit: Math.min(Number(req.query.limit || 10000) || 10000, 10000),
+            offset: Number(req.query.offset || 0) || 0,
+          });
+          entries[MASTER_CATALOG_RESPONSE_KEYS[key] || key] = {
+            items: result.rows.map((row) => normalizeCatalogRow(result.config, row)),
+            total: result.total,
+          };
+        }
+        return entries;
+      });
+
+      const responseKey = resolvedType ? MASTER_CATALOG_RESPONSE_KEYS[resolvedType] || resolvedType : null;
+      return res.json(responseKey ? data[responseKey] || { items: [], total: 0 } : data);
+    } catch (error) {
+      console.error("[GET /api/masters/catalog] failed", error);
+      return res.status(500).json({ error: "Failed to load master catalog" });
+    }
+  }
+);
+
+app.get(
+  "/api/masters/catalog/:master",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (req, res) => {
+    const masterKey = resolveMasterKey(req.params.master);
+    const config = MASTER_CATALOGS[masterKey];
+    if (!config) return res.status(404).json({ error: "Unknown master" });
+
+    try {
+      const result = await withCatalogPool((pool) =>
+        listCatalogRecords(pool, masterKey, {
+          search: String(req.query.search || "").trim(),
+          limit: Math.min(Number(req.query.limit || 25) || 25, 500),
+          offset: Number(req.query.offset || 0) || 0,
+        })
+      );
+
+      return res.json({
+        items: result.rows.map((row) => normalizeCatalogRow(result.config, row)),
+        total: result.total,
+      });
+    } catch (error) {
+      console.error("[GET /api/masters/catalog] failed", error);
+      return res.status(500).json({ error: "Failed to load master" });
+    }
+  }
+);
+
+app.post(
+  "/api/masters/catalog/:master",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (req, res) => {
+    const masterKey = resolveMasterKey(req.params.master);
+    const config = MASTER_CATALOGS[masterKey];
+    if (!config) return res.status(404).json({ error: "Unknown master" });
+
+    try {
+      const row = await withCatalogPool(async (pool) => {
+        await ensureCatalogTable(pool, config);
+        const body = req.body || {};
+
+        if (config.kind === "station") {
+          const code = String(body.station_code || body.code || "").trim().toUpperCase();
+          const name = String(body.station_name || body.name || "").trim();
+          if (!code || !name) throw new Error("Station code and name are required");
+          const state = await requireMasterReference(pool, "state_master", body.state, "State");
+          const district = await requireDistrictReference(pool, state, body.district);
+          const zone = await requireMasterReference(pool, "zone_master", body.zone, "Zone");
+          const division = await requireDivisionReference(pool, zone, body.division);
+          const id = body.id || `st_${code}`;
+          const result = await pool.query(
+            `INSERT INTO station_master (id, station_code, station_name, district, state, division, zone, is_active, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NOW(), NOW())
+             ON CONFLICT (station_code) DO UPDATE SET station_name = EXCLUDED.station_name, district = EXCLUDED.district, state = EXCLUDED.state, division = EXCLUDED.division, zone = EXCLUDED.zone, updated_at = NOW()
+             RETURNING *`,
+            [id, code, name, district, state, division, zone]
+          );
+          return result.rows[0];
+        }
+
+        if (config.kind === "typedCommodity") {
+          const code = String(body.code || body.commodity_code || "").trim().toUpperCase();
+          const name = String(body.name || body.full_name || body.commodity_name || "").trim();
+          if (!code || !name) throw new Error(`${config.label} code and name are required`);
+          const id = body.id || catalogId(config.type.toLowerCase(), code);
+          const result = await pool.query(
+            `INSERT INTO commodity_master (id, code, name, commodity_code, commodity_name, type, commodity_group_code, commodity_group_name, is_active, created_at, updated_at)
+             VALUES ($1, $2, $3, $2, $3, $4, NULL, NULL, TRUE, NOW(), NOW())
+             ON CONFLICT (code, type) DO UPDATE SET name = EXCLUDED.name, commodity_code = EXCLUDED.commodity_code, commodity_name = EXCLUDED.commodity_name, commodity_group_code = NULL, commodity_group_name = NULL, updated_at = NOW()
+             RETURNING *`,
+            [id, code, name, config.type]
+          );
+          return result.rows[0];
+        }
+
+        const code = String(body.code || "").trim().toUpperCase();
+        const name = String(body.name || "").trim();
+        if (!code || !name) throw new Error(`${config.label} code and name are required`);
+        let parentCode = body.parent_code ? String(body.parent_code).trim().toUpperCase() : null;
+        if (masterKey === "district") {
+          parentCode = await requireMasterReference(pool, "state_master", parentCode, "Parent State");
+        }
+        if (masterKey === "division") {
+          parentCode = await requireMasterReference(pool, "zone_master", parentCode, "Zone");
+        }
+        const id = body.id || catalogId(config.table, code);
+        const result = await pool.query(
+          `INSERT INTO ${config.table} (id, code, name, parent_code, active, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, TRUE, NOW(), NOW())
+           ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, parent_code = EXCLUDED.parent_code, updated_at = NOW()
+           RETURNING *`,
+          [id, code, name, parentCode]
+        );
+        return result.rows[0];
+      });
+
+      return res.status(201).json(normalizeCatalogRow(config, row));
+    } catch (error) {
+      return res.status(400).json({ error: error?.message || "Failed to save master" });
+    }
+  }
+);
+
+app.put(
+  "/api/masters/catalog/:master/:id",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (req, res) => {
+    const masterKey = resolveMasterKey(req.params.master);
+    const config = MASTER_CATALOGS[masterKey];
+    if (!config) return res.status(404).json({ error: "Unknown master" });
+
+    try {
+      const row = await withCatalogPool(async (pool) => {
+        await ensureCatalogTable(pool, config);
+        const body = req.body || {};
+
+        if (config.kind === "station") {
+          const code = String(body.station_code || body.code || "").trim().toUpperCase();
+          const name = String(body.station_name || body.name || "").trim();
+          if (!code || !name) throw new Error("Station code and name are required");
+          const state = await requireMasterReference(pool, "state_master", body.state, "State");
+          const district = await requireDistrictReference(pool, state, body.district);
+          const zone = await requireMasterReference(pool, "zone_master", body.zone, "Zone");
+          const division = await requireDivisionReference(pool, zone, body.division);
+          const result = await pool.query(
+            `UPDATE station_master SET station_code = $1, station_name = $2, district = $3, state = $4, division = $5, zone = $6, updated_at = NOW()
+             WHERE id = $7 RETURNING *`,
+            [
+              code,
+              name,
+              district,
+              state,
+              division,
+              zone,
+              req.params.id,
+            ]
+          );
+          return result.rows[0];
+        }
+
+        if (config.kind === "typedCommodity") {
+          const code = String(body.code || body.commodity_code || "").trim().toUpperCase();
+          const name = String(body.name || body.full_name || body.commodity_name || "").trim();
+          if (!code || !name) throw new Error(`${config.label} code and name are required`);
+          const result = await pool.query(
+            `UPDATE commodity_master SET code = $1, name = $2, commodity_code = $1, commodity_name = $2, type = $3, commodity_group_code = NULL, commodity_group_name = NULL, updated_at = NOW()
+             WHERE id = $4 RETURNING *`,
+            [
+              code,
+              name,
+              config.type,
+              req.params.id,
+            ]
+          );
+          return result.rows[0];
+        }
+
+        let parentCode = body.parent_code ? String(body.parent_code).trim().toUpperCase() : null;
+        if (masterKey === "district") {
+          parentCode = await requireMasterReference(pool, "state_master", parentCode, "Parent State");
+        }
+        if (masterKey === "division") {
+          parentCode = await requireMasterReference(pool, "zone_master", parentCode, "Zone");
+        }
+        const code = String(body.code || "").trim().toUpperCase();
+        const name = String(body.name || "").trim();
+        if (!code || !name) throw new Error(`${config.label} code and name are required`);
+        const result = await pool.query(
+          `UPDATE ${config.table} SET code = $1, name = $2, parent_code = $3, updated_at = NOW()
+           WHERE id = $4 RETURNING *`,
+          [
+            code,
+            name,
+            parentCode,
+            req.params.id,
+          ]
+        );
+        return result.rows[0];
+      });
+
+      if (!row) return res.status(404).json({ error: "Master record not found" });
+      return res.json(normalizeCatalogRow(config, row));
+    } catch (error) {
+      return res.status(400).json({ error: error?.message || "Failed to update master" });
+    }
+  }
+);
+
+app.delete(
+  "/api/masters/catalog/:master/:id",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (req, res) => {
+    const config = MASTER_CATALOGS[resolveMasterKey(req.params.master)];
+    if (!config) return res.status(404).json({ error: "Unknown master" });
+
+    try {
+      await withCatalogPool(async (pool) => {
+        await ensureCatalogTable(pool, config);
+        const table = config.table;
+        await pool.query(`DELETE FROM ${table} WHERE id = $1`, [req.params.id]);
+      });
+      return res.json({ id: req.params.id, deleted: true });
+    } catch (error) {
+      return res.status(400).json({ error: error?.message || "Failed to delete master" });
     }
   }
 );

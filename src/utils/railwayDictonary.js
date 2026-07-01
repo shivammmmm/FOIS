@@ -424,12 +424,6 @@ export function getStationName(code) {
   return STATION_NAMES[upper] || code;
 }
 
-export function getRakeTypeName(code) {
-  if (!code) return '—';
-  const upper = String(code).toUpperCase().trim();
-  return RAKE_TYPE_NAMES[upper] || code;
-}
-
 export function getCommodityName(code) {
   if (!code) return '—';
   const upper = String(code).toUpperCase().trim();
