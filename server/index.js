@@ -52,6 +52,92 @@ import {
 // Import the new clean Phase-1 modular controller
 import * as mastersController from "./controllers/mastersController.js";
 
+const FOIS_BASE_UPLOAD_HEADER_GROUPS = [
+  { label: "S.NO.", aliases: ["S.NO.", "S NO", "SR NO", "SR.NO."] },
+  { label: "DVSN", aliases: ["DVSN", "DIVISION"] },
+];
+
+const FOIS_NUMBER_UPLOAD_HEADER_GROUPS = {
+  ODR: { label: "NO.", aliases: ["NO."] },
+  MaturedIndent: {
+    label: "NO. / DEMAND NO.",
+    aliases: ["NO.", "DEMAND NO.", "INDENT NO."],
+  },
+};
+
+function getRequiredFoisHeaderGroups(fileType) {
+  return [
+    ...FOIS_BASE_UPLOAD_HEADER_GROUPS,
+    FOIS_NUMBER_UPLOAD_HEADER_GROUPS[fileType] ||
+      FOIS_NUMBER_UPLOAD_HEADER_GROUPS.ODR,
+  ];
+}
+
+function normalizeUploadHeader(value) {
+  return String(value || "")
+    .trim()
+    .toUpperCase();
+}
+
+function getSheetCellText(sheet, row, col) {
+  const cell = sheet?.[XLSX.utils.encode_cell({ r: row, c: col })];
+  return String(cell?.w ?? cell?.v ?? "").trim();
+}
+
+function findFoisHeaderRow(sheet, fileType) {
+  if (!sheet?.["!ref"]) return -1;
+
+  const requiredHeaderGroups = getRequiredFoisHeaderGroups(fileType);
+  const range = XLSX.utils.decode_range(sheet["!ref"]);
+  for (let row = range.s.r; row <= range.e.r; row++) {
+    const headers = new Set();
+    for (let col = range.s.c; col <= range.e.c; col++) {
+      const header = normalizeUploadHeader(getSheetCellText(sheet, row, col));
+      if (header) headers.add(header);
+    }
+
+    if (
+      requiredHeaderGroups.every((group) =>
+        group.aliases.some((header) => headers.has(header))
+      )
+    ) {
+      return row;
+    }
+  }
+
+  return -1;
+}
+
+function sheetToFoisRows(sheet, fileType) {
+  const headerRow = findFoisHeaderRow(sheet, fileType);
+  if (headerRow < 0) {
+    return {
+      headerRowNumber: null,
+      rows: XLSX.utils.sheet_to_json(sheet, { defval: "" }),
+    };
+  }
+
+  return {
+    headerRowNumber: headerRow + 1,
+    rows: XLSX.utils.sheet_to_json(sheet, {
+      defval: "",
+      range: headerRow,
+    }),
+  };
+}
+
+function createClientUploadError(message) {
+  const error = new Error(message);
+  error.status = 400;
+  return error;
+}
+
+function getRequiredFoisHeaderMessage(fileType) {
+  return getRequiredFoisHeaderGroups(fileType)
+    .map((group) => group.label)
+    .join(", ");
+}
+
 function normalizeCommodityCode(code) {
   return String(code || "")
     .trim()
@@ -938,7 +1024,7 @@ app.post(
         ? workbook.SheetNames
         : [];
       if (sheetNames.length === 0) {
-        throw new Error("Workbook has no sheets");
+        throw createClientUploadError("Workbook has no sheets");
       }
 
       let parsedRecords = [];
@@ -959,13 +1045,15 @@ app.post(
           invalidRows: 0,
           insertedRows: 0,
           updatedRows: 0,
+          headerRow: null,
         };
 
         try {
-          const sheetRows = XLSX.utils.sheet_to_json(
+          const { rows: sheetRows, headerRowNumber } = sheetToFoisRows(
             workbook.Sheets[sheetName],
-            { defval: "" }
+            fileType
           );
+          sheetStats.headerRow = headerRowNumber;
 
           sheetStats.totalRows = Array.isArray(sheetRows)
             ? sheetRows.length
@@ -1035,8 +1123,10 @@ app.post(
       }
 
       if (parsedRecords.length === 0) {
-        throw new Error(
-          "File has no valid data records across processed sheets"
+        throw createClientUploadError(
+          `File has no valid data records across processed sheets. Required FOIS headers: ${getRequiredFoisHeaderMessage(
+            fileType
+          )}.`
         );
       }
 

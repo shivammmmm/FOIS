@@ -132,9 +132,9 @@ function getFoisFields(row) {
     srNo: cell(row, 'S.NO.'),
     division: cell(row, 'DVSN').toUpperCase(),
     stationFrom: cell(row, 'STTN FROM').toUpperCase(),
-    indentNo: cell(row, 'NO.'),
-    indentDate: cell(row, 'DATE'),
-    indentTime: cell(row, 'TIME'),
+    indentNo: firstCell(row, ['NO.', 'DEMAND NO.', 'INDENT NO.', 'INDENT NUMBER']),
+    indentDate: firstCell(row, ['DATE', 'DEMAND DATE', 'INDENT DATE']),
+    indentTime: firstCell(row, ['TIME', 'DEMAND TIME', 'INDENT TIME']),
     expectedLoadingDate: cell(row, 'EXPECTED LOADING DATE'),
     cnsr: firstCell(row, [
       'CNSR',
@@ -172,13 +172,13 @@ function getFoisFields(row) {
       'WAGON CODE',
     ]).toUpperCase(),
     destination: cell(row, 'DSTN').toUpperCase(),
-    indentType: cell(row, 'TYPE').toUpperCase(),
-    indentedUnits: cell(row, 'INDENTED UNTS'),
-    indented8w: cell(row, 'INDENTED 8W'),
+    indentType: firstCell(row, ['TYPE', 'INDENTED TYPE']).toUpperCase(),
+    indentedUnits: firstCell(row, ['INDENTED UNTS', 'INDENTED UNITS']),
+    indented8w: firstCell(row, ['INDENTED 8W', '8W']),
     otsgUnits: cell(row, 'OTSG UNTS'),
     otsg8w: cell(row, 'OTSG 8W'),
     suppliedUnits: cell(row, 'SUPPLIED UNTS'),
-    suppliedTime: cell(row, 'SUPPLIED TIME'),
+    suppliedTime: firstCell(row, ['SUPPLIED TIME', 'METWITH DATE']),
   };
 }
 
@@ -280,8 +280,23 @@ function detectStatus(arrivalDate) {
 }
 
 function normalizeDate(val) {
-  if (!val) return '';
+  if (val === null || val === undefined || val === '') return '';
+  if (val instanceof Date && !Number.isNaN(val.getTime())) {
+    return val.toISOString().slice(0, 10);
+  }
+
   const s = String(val).trim();
+  const serial = Number(s);
+  if (
+    Number.isFinite(serial) &&
+    serial >= 20000 &&
+    serial <= 80000 &&
+    /^\d+(\.\d+)?$/.test(s)
+  ) {
+    const date = new Date((Math.floor(serial) - 25569) * 86400 * 1000);
+    return date.toISOString().slice(0, 10);
+  }
+
   // dd-mm-yyyy or dd-mm-yy
   const m1 = s.match(/^(\d{1,2})-(\d{1,2})-(\d{2,4})$/);
   if (m1) {
