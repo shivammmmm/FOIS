@@ -1086,7 +1086,8 @@ app.post(
       if (!entry.chunks[index]) { entry.chunks[index] = req.body; entry.size += req.body.length; }
       if (entry.size > 25 * 1024 * 1024) { pendingUploadChunks.delete(uploadId); return res.status(413).json({ error: "Excel file exceeds 25 MB" }); }
       pendingUploadChunks.set(uploadId, entry);
-      if (entry.chunks.some((chunk) => !chunk)) return res.json({ success: true, received: index + 1, total });
+      const receivedCount = entry.chunks.reduce((count, chunk) => count + (Buffer.isBuffer(chunk) ? 1 : 0), 0);
+      if (receivedCount !== total) return res.json({ success: true, received: receivedCount, total });
 
       pendingUploadChunks.delete(uploadId);
       const token = getAuthToken(req);
