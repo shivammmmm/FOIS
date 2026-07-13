@@ -52,6 +52,7 @@ export default function FreightTracker() {
 
   const [records, setRecords] = useState([]);
   const [uploadDates, setUploadDates] = useState(new Map());
+  const [uploadDateError, setUploadDateError] = useState("");
   const [savedFilters, setSavedFilters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({ ...DEFAULT_FILTERS, search: initialSearch });
@@ -63,12 +64,15 @@ export default function FreightTracker() {
     const load = async () => {
       setLoading(true);
       try {
-        const [data, uploads] = await Promise.all([
+        const [data, uploadResult] = await Promise.all([
           base44.entities.FreightMovement.list("-created_date", 50000),
-          base44.entities.UploadLog.list("-created_date", 1000).catch(() => []),
+          base44.entities.UploadLog.list("-created_date", 10000)
+            .then((uploads) => ({ uploads, error: "" }))
+            .catch((error) => ({ uploads: [], error: error?.message || "Upload metadata could not be loaded" })),
         ]);
-        setRecords(data || []);
-        setUploadDates(new Map((uploads || []).map((upload) => [String(upload.batch_id || upload.upload_id || upload.id), upload.uploaded_at || upload.upload_time || upload.created_date])));
+        setRecords(extractItems(data));
+        setUploadDateError(uploadResult.error);
+        setUploadDates(buildUploadDateMap(extractItems(uploadResult.uploads)));
         if (user?.id) {
           const rows = await base44.entities.SavedFilter.filter(
             { user_id: user.id },
@@ -321,6 +325,7 @@ export default function FreightTracker() {
         records
         {filteredRows.length !== records.length && ` (filtered from ${records.length})`}
       </div>
+      {uploadDateError && <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700">Upload Date unavailable: {uploadDateError}</div>}
 
       <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
         <div className="overflow-x-auto">
@@ -435,7 +440,13 @@ function LoadingTable() {
 }
 
 function buildSheetRow(record, uploadDates) {
-  const uploadKey = String(record.batch_id || record.upload_id || "");
+  const uploadKey = normalizeBatchKey(
+    record.upload_batch_id ||
+    record.batch_id ||
+    record.upload_id ||
+    record.raw_data?.upload_batch_id ||
+    record.raw_data?.batch_id
+  );
   return {
     DVSN: readValue(record, "DVSN", "division"),
     "STTN FROM": readValue(record, "STTN FROM", "station_from"),
@@ -452,6 +463,27 @@ function buildSheetRow(record, uploadDates) {
     "SUPPLIED UNTS": readValue(record, "SUPPLIED UNTS", "supplied_units", "wagons"),
     "SUPPLIED TIME": formatSheetTime(readValue(record, "SUPPLIED TIME", "supplied_time", "UpdatedTime")),
   };
+}
+
+function extractItems(response) {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.items)) return response.items;
+  if (Array.isArray(response?.rows)) return response.rows;
+  return [];
+}
+
+function normalizeBatchKey(value) {
+  return String(value || "").trim();
+}
+
+function buildUploadDateMap(uploads) {
+  const dates = new Map();
+  uploads.forEach((upload) => {
+    const date = upload.uploaded_at || upload.upload_time || upload.created_date;
+    const keys = [upload.batch_id, upload.upload_batch_id, upload.upload_id, upload.id];
+    keys.map(normalizeBatchKey).filter(Boolean).forEach((key) => dates.set(key, date));
+  });
+  return dates;
 }
 
 function formatUploadDate(value) {

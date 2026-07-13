@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, Outlet, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import {
@@ -71,6 +71,8 @@ const userNavItems = [
 export default function Layout() {
   const [open, setOpen] = useState(false);
   const [masterMenuOpen, setMasterMenuOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const profileRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
   const { user, logout } = useAuth();
@@ -82,6 +84,15 @@ export default function Layout() {
       setMasterMenuOpen(true);
     }
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (!profileOpen) return undefined;
+    const close = (event) => {
+      if (!profileRef.current?.contains(event.target)) setProfileOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [profileOpen]);
 
   return (
     <div className="flex h-screen bg-background overflow-hidden">
@@ -304,7 +315,8 @@ export default function Layout() {
             <GlobalSearch />
           </div>
           <NotificationBell isAdmin={isAdmin} />
-          <div className="flex items-center gap-2">
+          <div ref={profileRef} className="relative">
+            <button type="button" onClick={() => setProfileOpen((value) => !value)} className="flex items-center gap-2 rounded-lg p-1.5 hover:bg-muted" aria-label="Open profile">
             <div className="w-8 h-8 rounded-full bg-primary/15 flex items-center justify-center">
               <span className="text-xs font-semibold text-primary">
                 {user?.full_name?.[0] || user?.username?.[0] || "U"}
@@ -313,6 +325,12 @@ export default function Layout() {
             <span className="text-sm text-muted-foreground hidden md:block">
               {user?.full_name || user?.username || "User"}
             </span>
+            </button>
+            {profileOpen && <div className="absolute right-0 z-50 mt-2 w-72 rounded-xl border border-border bg-card p-4 shadow-xl">
+              <div className="text-sm font-semibold text-foreground">Profile</div>
+              <div className="mt-3 space-y-2 text-sm"><div><span className="text-xs text-muted-foreground">Username</span><div className="break-all font-medium">{user?.username || "-"}</div></div><div><span className="text-xs text-muted-foreground">Email</span><div className="break-all font-medium">{user?.email || "-"}</div></div><div><span className="text-xs text-muted-foreground">Role</span><div className="capitalize font-medium">{String(user?.role || "user").replaceAll("_", " ")}</div></div></div>
+              <button type="button" onClick={logout} className="mt-4 w-full rounded-lg border border-destructive/30 px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10">Logout</button>
+            </div>}
           </div>
         </header>
 

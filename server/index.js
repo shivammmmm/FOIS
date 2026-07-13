@@ -21,6 +21,7 @@ import {
   listUsers,
   listRecords,
   updateUserRole,
+  updateUserPassword,
   updateRecord,
 } from "./storage.js";
 
@@ -300,6 +301,8 @@ const localUser = {
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev_jwt_secret_change_me";
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
+const passwordResetCodes = new Map();
+const pendingUploadChunks = new Map();
 
 const SUPER_ADMIN = {
   username: "6266782930",
@@ -582,6 +585,42 @@ app.post("/api/auth/login", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+app.post("/api/auth/forgot-password", async (req, res, next) => {
+  try {
+    const identifier = String(req.body?.identifier || "").trim();
+    if (!identifier) return res.status(400).json({ error: "Username or email is required" });
+    const user = await findUserByIdentifier(identifier);
+    if (!user) return res.json({ message: "If the account exists, a reset code has been sent." });
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    passwordResetCodes.set(String(user.id), { codeHash: await bcrypt.hash(code, 8), expiresAt: Date.now() + 10 * 60 * 1000 });
+    let sent = false;
+    if (process.env.EMAIL_PROVIDER === "aws_ses" && user.email) {
+      try {
+        const { SESClient, SendEmailCommand } = await import("@aws-sdk/client-ses");
+        const client = new SESClient({ region: process.env.AWS_REGION, credentials: { accessKeyId: process.env.AWS_ACCESS_KEY_ID, secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY } });
+        await client.send(new SendEmailCommand({ Source: process.env.SES_FROM_EMAIL, Destination: { ToAddresses: [user.email] }, Message: { Subject: { Data: "RailFlow password reset code", Charset: "UTF-8" }, Body: { Text: { Data: `Your RailFlow password reset code is ${code}. It expires in 10 minutes.`, Charset: "UTF-8" } } } }));
+        sent = true;
+      } catch (error) { console.error("[PasswordReset] SES delivery failed", error?.message); }
+    }
+    return res.json({ message: sent ? "Reset code sent to your email." : "Reset code generated for local development.", ...(process.env.NODE_ENV === "production" ? {} : { development_code: code }) });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/auth/reset-password", async (req, res, next) => {
+  try {
+    const identifier = String(req.body?.identifier || "").trim();
+    const code = String(req.body?.code || "").trim();
+    const password = String(req.body?.password || "");
+    if (!identifier || !code || password.length < 6) return res.status(400).json({ error: "Identifier, valid code and password of at least 6 characters are required" });
+    const user = await findUserByIdentifier(identifier);
+    const reset = user ? passwordResetCodes.get(String(user.id)) : null;
+    if (!user || !reset || reset.expiresAt < Date.now() || !(await bcrypt.compare(code, reset.codeHash))) return res.status(400).json({ error: "Invalid or expired reset code" });
+    await updateUserPassword(user.id, await bcrypt.hash(password, 10));
+    passwordResetCodes.delete(String(user.id));
+    return res.json({ message: "Password reset successful. You can now sign in." });
+  } catch (error) { next(error); }
 });
 
 app.get("/api/auth/me", requireAuth, async (req, res, next) => {
@@ -1028,16 +1067,56 @@ app.delete(
 );
 
 app.post(
+  "/api/admin/uploads/excel/chunk",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  express.raw({ type: "application/octet-stream", limit: "1mb" }),
+  async (req, res, next) => {
+    try {
+      const uploadId = String(req.query.uploadId || "").trim();
+      const fileName = String(req.query.fileName || "").trim();
+      const fileType = String(req.query.fileType || "").trim();
+      const index = Number(req.query.index);
+      const total = Number(req.query.total);
+      if (!uploadId || !fileName || !["ODR", "MaturedIndent"].includes(fileType) || !Number.isInteger(index) || !Number.isInteger(total) || index < 0 || total < 1 || total > 100 || index >= total || !Buffer.isBuffer(req.body)) {
+        return res.status(400).json({ error: "Invalid upload chunk" });
+      }
+      const entry = pendingUploadChunks.get(uploadId) || { fileName, fileType, total, chunks: new Array(total), size: 0, createdAt: Date.now() };
+      if (entry.fileName !== fileName || entry.fileType !== fileType || entry.total !== total) return res.status(400).json({ error: "Upload chunk metadata mismatch" });
+      if (!entry.chunks[index]) { entry.chunks[index] = req.body; entry.size += req.body.length; }
+      if (entry.size > 25 * 1024 * 1024) { pendingUploadChunks.delete(uploadId); return res.status(413).json({ error: "Excel file exceeds 25 MB" }); }
+      pendingUploadChunks.set(uploadId, entry);
+      if (entry.chunks.some((chunk) => !chunk)) return res.json({ success: true, received: index + 1, total });
+
+      pendingUploadChunks.delete(uploadId);
+      const token = getAuthToken(req);
+      const params = new URLSearchParams({ fileName, fileType });
+      const upstream = await fetch(`http://127.0.0.1:${port}/api/admin/uploads/excel?${params}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream", Authorization: `Bearer ${token}` },
+        body: Buffer.concat(entry.chunks),
+      });
+      const payload = await upstream.json().catch(() => ({ error: "Upload processing failed" }));
+      return res.status(upstream.status).json(payload);
+    } catch (error) { next(error); }
+  }
+);
+
+app.post(
   "/api/admin/uploads/excel",
   requireAuth,
   requireRoles(ADMIN_ROLES),
+  express.raw({ type: "application/octet-stream", limit: "25mb" }),
   async (req, res, next) => {
     try {
-      const { fileName, fileType, fileBase64 } = req.body || {};
-      if (!fileName || !fileType || !fileBase64) {
+      const isBinaryUpload = Buffer.isBuffer(req.body);
+      const fileName = isBinaryUpload ? req.query.fileName : req.body?.fileName;
+      const fileType = isBinaryUpload ? req.query.fileType : req.body?.fileType;
+      const fileBase64 = isBinaryUpload ? null : req.body?.fileBase64;
+      if (!fileName || !fileType || (!isBinaryUpload && !fileBase64)) {
         return res
           .status(400)
-          .json({ error: "fileName, fileType, and fileBase64 are required" });
+          .json({ error: "fileName, fileType, and file content are required" });
       }
       if (!["ODR", "MaturedIndent"].includes(fileType)) {
         return res
@@ -1046,7 +1125,7 @@ app.post(
       }
 
       const batchId = generateBatchId();
-      const buffer = Buffer.from(String(fileBase64), "base64");
+      const buffer = isBinaryUpload ? req.body : Buffer.from(String(fileBase64), "base64");
       const workbook = XLSX.read(buffer, { type: "buffer" });
 
       const sheetNames = Array.isArray(workbook.SheetNames)

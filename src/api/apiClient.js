@@ -246,11 +246,24 @@ export const apiClient = {
         }),
     },
     uploads: {
-      excel: ({ fileName, fileType, fileBase64 }) =>
-        request("/api/admin/uploads/excel", {
-          method: "POST",
-          body: JSON.stringify({ fileName, fileType, fileBase64 }),
-        }),
+      excel: async ({ fileName, fileType, file }) => {
+        const token = getToken();
+        const chunkSize = 700 * 1024;
+        const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
+        const uploadId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+        let details = {};
+        for (let index = 0; index < totalChunks; index += 1) {
+          const params = new URLSearchParams({ fileName, fileType, uploadId, index: String(index), total: String(totalChunks) });
+          const response = await fetch(`${API_BASE_URL}/api/admin/uploads/excel/chunk?${params}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/octet-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            body: await file.slice(index * chunkSize, Math.min(file.size, (index + 1) * chunkSize)).arrayBuffer(),
+          });
+          details = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(details.error || `Upload failed at part ${index + 1}: ${response.status}`);
+        }
+        return details;
+      },
     },
     uploadHistory: {
       list: ({ limit = 100 } = {}) => {

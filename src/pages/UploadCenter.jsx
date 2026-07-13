@@ -29,11 +29,10 @@ export default function UploadCenter() {
     setUploadResult(null);
 
     try {
-      const fileBase64 = await readFileAsBase64(file);
       const result = await base44.admin.uploads.excel({
         fileName: file.name,
         fileType,
-        fileBase64,
+        file,
       });
 
       setUploadResult(result);
@@ -230,14 +229,3 @@ export default function UploadCenter() {
   );
 }
 
-function readFileAsBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      resolve(result.includes(',') ? result.split(',').pop() : result);
-    };
-    reader.onerror = () => reject(reader.error || new Error('Unable to read file'));
-    reader.readAsDataURL(file);
-  });
-}

@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Bell } from 'lucide-react';
 import { base44 } from '@/api/base44Client';
 
 export default function NotificationBell({ isAdmin = false }) {
+  const rootRef = useRef(null);
   const [unread, setUnread] = useState(0);
   const [notifications, setNotifications] = useState([]);
   const [open, setOpen] = useState(false);
@@ -26,6 +27,22 @@ export default function NotificationBell({ isAdmin = false }) {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOutside = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', closeOutside);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOutside);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+
   const markRead = async (item) => {
     if (!item.is_read) await base44.notifications.markRead(item.id);
     await load();
@@ -38,7 +55,7 @@ export default function NotificationBell({ isAdmin = false }) {
   };
 
   return (
-    <div className="relative">
+    <div ref={rootRef} className="relative">
     <button type="button" aria-label="Notifications" onClick={() => { setOpen((value) => !value); load(); }} className="relative p-2 rounded-lg hover:bg-muted transition-colors">
       <Bell className="w-5 h-5 text-muted-foreground" />
       {unread > 0 && (

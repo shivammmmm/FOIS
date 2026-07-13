@@ -53,6 +53,18 @@ export const base44 = {
 
       return data;
     },
+    requestPasswordReset: async (identifier) => {
+      const response = await fetch('/api/auth/forgot-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Unable to request password reset');
+      return data;
+    },
+    resetPassword: async ({ identifier, code, password }) => {
+      const response = await fetch('/api/auth/reset-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier, code, password }) });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || 'Unable to reset password');
+      return data;
+    },
 
     updateMe: async (updates = /** @type {any} */ ({})) => {
       // Backend currently doesn't implement PATCH /api/auth/me.

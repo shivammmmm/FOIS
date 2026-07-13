@@ -720,6 +720,23 @@ export async function updateUserRole(id, role) {
   return safeUser;
 }
 
+export async function updateUserPassword(id, passwordHash) {
+  if (activeStorage === "postgres") {
+    const result = await pool.query(
+      `UPDATE users SET password_hash = $2, updated_date = NOW() WHERE id = $1 RETURNING id`,
+      [String(id), passwordHash]
+    );
+    return result.rows[0] || null;
+  }
+  const db = await readDb();
+  const users = Array.isArray(db.Users) ? db.Users : [];
+  const index = users.findIndex((user) => String(user.id) === String(id));
+  if (index === -1) return null;
+  db.Users[index] = { ...users[index], password_hash: passwordHash, updated_date: nowIso() };
+  await writeDb(db);
+  return { id: db.Users[index].id };
+}
+
 export async function listRecords(entityName, options = {}) {
   assertEntity(entityName);
   if (activeStorage !== "postgres") return jsonListRecords(entityName, options);
