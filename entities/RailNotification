@@ -5,14 +5,8 @@
     "type": {
       "type": "string",
       "enum": [
-        "MissingODR",
-        "DuplicateODR",
-        "Arrival",
-        "Departure",
-        "Delay",
         "Inward",
-        "Outward",
-        "System"
+        "Outward"
       ]
     },
     "title": {

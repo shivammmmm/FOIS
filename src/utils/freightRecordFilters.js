@@ -82,6 +82,7 @@ export function getRecordZone(record) {
 export function getRakeCmdtValue(record) {
   const candidates = [
     record?.rake_cmdt,
+    record?.rake_commodity,
     record?.rake_commodity_code,
     readRawValue(record, ...RAKE_CMDT_RAW_KEYS),
   ];

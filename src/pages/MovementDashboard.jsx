@@ -22,10 +22,13 @@ import {
 import { base44 } from "@/api/base44Client";
 import { getCommodityColor } from "@/utils/railwayDictionary";
 import { formatStationNameAndCode } from "@/utils/stationMaster";
+import MultiSelectFilter from "@/components/MultiSelectFilter";
+import { getBusinessRakeCmdtCode } from "@/utils/freightRecordFilters";
 
 export default function MovementDashboard({ direction = "Inward" }) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [filters, setFilters] = useState({ zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] });
   const isInward = direction === "Inward";
   const Icon = isInward ? ArrowDownToLine : ArrowUpFromLine;
   const accent = isInward ? "text-emerald-500" : "text-blue-500";
@@ -46,17 +49,27 @@ export default function MovementDashboard({ direction = "Inward" }) {
     load();
   }, [direction]);
 
-  const stats = useMemo(() => buildDashboardStats(records, direction), [records, direction]);
+  const options = useMemo(() => {
+    const values = (getter, scope = records) => [...new Set(scope.map(getter).filter(Boolean))].sort();
+    const stateScoped = filters.state.length ? records.filter((r) => filters.state.includes(getLocation(r, direction).state)) : records;
+    return { zone: values((r) => r.zone), division: values((r) => r.division), state: values((r) => getLocation(r, direction).state), district: values((r) => getLocation(r, direction).district, stateScoped), station: values((r) => getLocation(r, direction).station), commodity: values(getCommodity), rake: values(getBusinessRakeCmdtCode), company: values((r) => r.company || r.consignor || r.consignee) };
+  }, [records, filters.state, direction]);
+  const filteredRecords = useMemo(() => records.filter((r) => {
+    const location = getLocation(r, direction);
+    const match = (selected, value) => !selected.length || selected.includes(value);
+    return match(filters.zone, r.zone) && match(filters.division, r.division) && match(filters.state, location.state) && match(filters.district, location.district) && match(filters.station, location.station) && match(filters.commodity, getCommodity(r)) && match(filters.rake, getBusinessRakeCmdtCode(r)) && match(filters.company, r.company || r.consignor || r.consignee);
+  }), [records, filters, direction]);
+  const stats = useMemo(() => buildDashboardStats(filteredRecords, direction), [filteredRecords, direction]);
 
   const cards = isInward
     ? [
-        { label: "Total Inward", value: records.length, icon: Layers3, color: "text-emerald-500" },
+        { label: "Total Inward", value: filteredRecords.length, icon: Layers3, color: "text-emerald-500" },
         { label: "Arrived", value: stats.arrived, icon: CheckCircle2, color: "text-emerald-500" },
         { label: "Pending", value: stats.pending, icon: Clock3, color: "text-amber-500" },
         { label: "Delayed", value: stats.delayed, icon: AlertTriangle, color: "text-red-500" },
       ]
     : [
-        { label: "Total Outward", value: records.length, icon: Layers3, color: "text-blue-500" },
+        { label: "Total Outward", value: filteredRecords.length, icon: Layers3, color: "text-blue-500" },
         { label: "Departed", value: stats.departed, icon: CheckCircle2, color: "text-blue-500" },
         { label: "Pending", value: stats.pending, icon: Clock3, color: "text-amber-500" },
         { label: "Delayed", value: stats.delayed, icon: AlertTriangle, color: "text-red-500" },
@@ -74,6 +87,11 @@ export default function MovementDashboard({ direction = "Inward" }) {
             Analytics for {direction.toLowerCase()} FOIS movements
           </p>
         </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2 rounded-xl border border-border bg-card p-3">
+        {[["zone","Zone"],["division","Division"],["state","State"],["district","District"],["station","Station"],["commodity","Commodity"],["rake","Rake CMDT"],["company","Company"]].map(([key, label]) => options[key].length > 0 && <MultiSelectFilter key={key} label={label} selected={filters[key]} options={options[key]} placeholder={`All ${label}`} onChange={(value) => setFilters((prev) => key === 'state' ? { ...prev, state: value, district: [], station: [] } : { ...prev, [key]: value })} />)}
+        <button type="button" onClick={() => setFilters({ zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] })} className="rounded-lg border border-border px-3 py-2 text-xs">Clear Filters</button>
       </div>
 
       <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
@@ -280,4 +298,13 @@ function readRaw(record, ...keys) {
     }
   }
   return "";
+}
+
+function getLocation(record, direction) {
+  const inward = direction === "Inward";
+  return {
+    state: record[inward ? "to_state" : "from_state"] || readRaw(record, inward ? "State (To)" : "State (Source)"),
+    district: record[inward ? "to_district" : "from_district"] || readRaw(record, inward ? "District (To)" : "District (Source)"),
+    station: record[inward ? "station_to" : "station_from"] || "",
+  };
 }

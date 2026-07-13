@@ -60,12 +60,12 @@ const adminNavItems = [
 
 // 👥 STANDARD USER NAVIGATION MATRIX (CLEAN HOUSEKEEPING)
 const userNavItems = [
+  { path: "/fois-reports", label: "FOIS Reports", icon: Train },
+  { path: "/inward-monitor", label: "Inward Monitor", icon: ArrowDownToLine },
+  { path: "/outward-monitor", label: "Outward Monitor", icon: ArrowUpFromLine },
   { path: "/inward-dashboard", label: "Inward Dashboard", icon: BarChart3 },
   { path: "/outward-dashboard", label: "Outward Dashboard", icon: BarChart3 },
-  { path: "/fois-reports", label: "FOIS Reports", icon: Train },
-  { path: "/inward-monitor", label: "Inward Monitor", icon: ArrowDownToLine }, // Connected seamlessly to User Routes
-  { path: "/outward-monitor", label: "Outward Monitor", icon: ArrowUpFromLine }, // Connected seamlessly to User Routes
-  { path: "/notification-preferences", label: "Notifications", icon: Bell },
+  { path: "/notification-preferences", label: "Notification Settings", icon: Bell },
 ];
 
 export default function Layout() {
@@ -303,7 +303,7 @@ export default function Layout() {
           <div className="flex-1">
             <GlobalSearch />
           </div>
-          {isAdmin && <NotificationBell />}
+          <NotificationBell isAdmin={isAdmin} />
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-full bg-primary/15 flex items-center justify-center">
               <span className="text-xs font-semibold text-primary">

@@ -46,7 +46,7 @@ const RoleHomeRedirect = () => {
   return ADMIN_ROLES.includes(user?.role) ? (
     <Navigate to="/admin/fois-reports" replace />
   ) : (
-    <Navigate to="/inward-monitor" replace />
+    <Navigate to="/fois-reports" replace />
   );
 };
 

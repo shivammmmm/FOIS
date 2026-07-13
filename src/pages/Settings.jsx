@@ -49,11 +49,6 @@ export default function Settings() {
   const toggle = (key) => setSettings(s => ({ ...s, [key]: !s[key] }));
 
   const NOTIFICATION_TOGGLES = [
-    { key: 'notify_arrival', label: 'Arrival Alerts', desc: 'When trains arrive at destination' },
-    { key: 'notify_departure', label: 'Departure Alerts', desc: 'When trains depart from origin' },
-    { key: 'notify_delay', label: 'Delay Alerts', desc: 'When trains are delayed' },
-    { key: 'notify_missing_odr', label: 'Missing ODR Alerts', desc: 'When Matured Indent has no matching ODR' },
-    { key: 'notify_duplicate_odr', label: 'Duplicate ODR Alerts', desc: 'When same ODR number appears multiple times' },
     { key: 'notify_inward', label: 'Inward Alerts', desc: 'When freight arrives at your station' },
     { key: 'notify_outward', label: 'Outward Alerts', desc: 'When freight dispatches from your station' },
   ];

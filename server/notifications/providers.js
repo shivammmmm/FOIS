@@ -91,7 +91,11 @@ function preferenceMatches(preference, notification, context = {}) {
   }
 
   const stationCode = context.station_code || notification.station_code;
-  if (hasAny(preference.stations) && !preference.stations.includes(stationCode)) {
+  const normalizedStationCode = normalizeCode(stationCode);
+  if (
+    hasAny(preference.stations) &&
+    !preference.stations.map(normalizeCode).includes(normalizedStationCode)
+  ) {
     return false;
   }
 

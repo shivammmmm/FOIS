@@ -1,12 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertTriangle,
   ArrowDownToLine,
   ArrowUpFromLine,
   Bell,
   CheckCheck,
-  Clock,
-  Copy,
   Save,
   Trash2,
 } from "lucide-react";
@@ -31,17 +28,10 @@ const FILTER_SOURCE = "notifications";
 const SAVED_SOURCE = "Notifications";
 
 const TYPE_CONFIG = {
-  MissingODR: { icon: AlertTriangle, color: "text-red-400", bg: "bg-red-500/10", label: "Missing ODR" },
-  DuplicateODR: { icon: Copy, color: "text-orange-400", bg: "bg-orange-500/10", label: "Duplicate ODR" },
   Arrival: { icon: ArrowDownToLine, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "Arrival" },
   Departure: { icon: ArrowUpFromLine, color: "text-blue-400", bg: "bg-blue-500/10", label: "Departure" },
-  Delay: { icon: Clock, color: "text-amber-400", bg: "bg-amber-500/10", label: "Delay" },
-  NewRecord: { icon: Bell, color: "text-primary", bg: "bg-primary/10", label: "New Record" },
-  ODR: { icon: AlertTriangle, color: "text-amber-400", bg: "bg-amber-500/10", label: "ODR" },
-  MaturedIndent: { icon: Clock, color: "text-purple-400", bg: "bg-purple-500/10", label: "Matured Indent" },
   Inward: { icon: ArrowDownToLine, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "Inward" },
   Outward: { icon: ArrowUpFromLine, color: "text-blue-400", bg: "bg-blue-500/10", label: "Outward" },
-  System: { icon: Bell, color: "text-primary", bg: "bg-primary/10", label: "System" },
 };
 
 const INWARD_TYPES = ["Inward", "Arrival"];
@@ -50,7 +40,6 @@ const OUTWARD_TYPES = ["Outward", "Departure"];
 const DEFAULT_FILTERS = {
   showInward: true,
   showOutward: true,
-  showOther: true,
   divisions: [],
   states: [],
   districts: [],
@@ -83,7 +72,7 @@ export default function Notifications() {
     setLoading(true);
     try {
       const [notifData, movData, savedRows] = await Promise.all([
-        base44.entities.RailNotification.list("-created_date", 1000),
+        base44.notifications.list(),
         base44.entities.FreightMovement.list("-created_date", 50000),
         user?.id
           ? base44.entities.SavedFilter.filter({ user_id: user.id }, "-created_at", 100)
@@ -160,7 +149,6 @@ export default function Notifications() {
     return notifs.filter((notification) => {
       if (isInwardType(notification.type) && !filters.showInward) return false;
       if (isOutwardType(notification.type) && !filters.showOutward) return false;
-      if (!isInwardType(notification.type) && !isOutwardType(notification.type) && !filters.showOther) return false;
 
       if (!optionMatches(filters.divisions, notification.related_division || "")) {
         return false;
@@ -186,7 +174,6 @@ export default function Notifications() {
   const hasActiveFilters =
     filters.showInward !== true ||
     filters.showOutward !== true ||
-    filters.showOther !== true ||
     filters.divisions.length > 0 ||
     filters.states.length > 0 ||
     filters.districts.length > 0 ||
@@ -202,7 +189,6 @@ export default function Notifications() {
     setFilters({
       showInward: nextFilters.showInward ?? true,
       showOutward: nextFilters.showOutward ?? true,
-      showOther: nextFilters.showOther ?? true,
       divisions: normalizeMultiValue(nextFilters.divisions ?? nextFilters.filterDivision),
       states: normalizeMultiValue(nextFilters.states),
       districts: normalizeMultiValue(nextFilters.districts),
@@ -234,18 +220,13 @@ export default function Notifications() {
   }
 
   async function markAllRead() {
-    const unread = notifs.filter((notification) => !notification.is_read);
-    await Promise.all(
-      unread.map((notification) =>
-        base44.entities.RailNotification.update(notification.id, { is_read: true })
-      )
-    );
+    await base44.notifications.markAllRead();
     await loadData();
   }
 
   async function markRead(notification) {
     if (notification.is_read) return;
-    await base44.entities.RailNotification.update(notification.id, { is_read: true });
+    await base44.notifications.markRead(notification.id);
     setNotifs((prev) =>
       prev.map((item) =>
         item.id === notification.id ? { ...item, is_read: true } : item
@@ -272,7 +253,7 @@ export default function Notifications() {
             )}
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Alerts, ODR comparisons, and system events
+            Inward and Outward movement notifications
           </p>
         </div>
         {unreadCount > 0 && (
@@ -292,7 +273,6 @@ export default function Notifications() {
           <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Show</span>
           <CheckboxFilter checked={filters.showInward} onChange={(value) => setFilter("showInward", value)} label="Inward / Arrival" color="text-emerald-600" bgColor="bg-emerald-500/10" borderColor="border-emerald-500/30" />
           <CheckboxFilter checked={filters.showOutward} onChange={(value) => setFilter("showOutward", value)} label="Outward / Departure" color="text-blue-600" bgColor="bg-blue-500/10" borderColor="border-blue-500/30" />
-          <CheckboxFilter checked={filters.showOther} onChange={(value) => setFilter("showOther", value)} label="System / ODR Alerts" color="text-amber-600" bgColor="bg-amber-500/10" borderColor="border-amber-500/30" />
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -398,7 +378,7 @@ export default function Notifications() {
           </div>
         ) : (
           filtered.map((notification) => {
-            const config = TYPE_CONFIG[notification.type] || TYPE_CONFIG.System;
+            const config = TYPE_CONFIG[notification.type] || TYPE_CONFIG.Inward;
             const IconComp = config.icon;
             return (
               <div

@@ -451,7 +451,11 @@ async function createMovementPreferenceNotifications(records, batchId) {
   const groups = new Map();
 
   for (const record of Array.isArray(records) ? records : []) {
-    const movementType = record.movement_type || "Unknown";
+    const movementType = record.movement_type;
+    if (!['Inward', 'Outward'].includes(movementType)) {
+      console.info('[NotificationDelivery] skipped record without valid movement type', { batchId, record_id: record.id });
+      continue;
+    }
     const stationCode =
       movementType === "Outward"
         ? record.station_from
@@ -470,7 +474,7 @@ async function createMovementPreferenceNotifications(records, batchId) {
   }
 
   for (const group of groups.values()) {
-    const type = group.movementType === "Outward" ? "Departure" : "Arrival";
+    const type = group.movementType;
     const movement = group.exemplar || {};
     const details = [
       movement.company_name || movement.company_code || movement.company,
@@ -484,10 +488,10 @@ async function createMovementPreferenceNotifications(records, batchId) {
       await createNotification({
         movement_reference: `${batchId}:${group.movementType}:${group.stationCode}`,
         station_code: group.stationCode,
-        notification_type: "NewRecord",
+        notification_type: type,
         type,
-        title: `${group.records.length} ${group.movementType} FOIS record(s)`,
-        message: `Batch ${batchId} has ${group.records.length} ${group.movementType.toLowerCase()} record(s) for station ${group.stationCode}${details ? ` (${details})` : ""}.`,
+        title: `New ${group.movementType} FOIS Record`,
+        message: `Station: ${group.stationCode}; Company/Commodity/Rake CMDT: ${details || '-'}; FNR/No.: ${movement.odr_number || movement.indent_no || '-'}; Upload Date: ${movement.created_date || new Date().toISOString()}.`,
         severity: "info",
         related_odr: movement.odr_number || null,
         related_division: movement.division || null,
@@ -693,7 +697,6 @@ app.delete(
 app.get(
   "/api/state-master",
   requireAuth,
-  requireRoles(ADMIN_ROLES),
   mastersController.getAllStates
 );
 
@@ -726,6 +729,27 @@ app.get("/api/masters/states", requireAuth, async (req, res, next) => {
   }
 });
 
+app.get("/api/masters/districts", requireAuth, async (req, res) => {
+  try {
+    const { Pool } = await import("pg");
+    const databaseUrl = process.env.DATABASE_URL || "postgresql://fois_user:fois_password@localhost:5432/fois_db";
+    const pool = new Pool({ connectionString: databaseUrl });
+    const state = String(req.query.state || "").trim().toUpperCase();
+    const result = await pool.query(
+      `SELECT id, code, name, parent_code, active
+       FROM district_master
+       WHERE (active IS NULL OR active = TRUE)
+         AND ($1::text = '' OR parent_code = $1)
+       ORDER BY name ASC`,
+      [state]
+    );
+    await pool.end();
+    return res.json({ items: result.rows, count: result.rowCount });
+  } catch (error) {
+    return res.status(500).json({ error: error?.message || "Failed to load districts" });
+  }
+});
+
 app.post(
   "/api/state-master",
   requireAuth,
@@ -748,7 +772,6 @@ app.delete(
 app.get(
   "/api/district-master",
   requireAuth,
-  requireRoles(ADMIN_ROLES),
   mastersController.getAllDistricts
 );
 app.post(
@@ -1163,26 +1186,6 @@ app.post(
           });
         });
 
-        if (duplicatesFound > 0) {
-          const eventKey = `DuplicateODR|${batchId}|${duplicatesFound}`;
-          const existing = await pool.query(
-            "SELECT id FROM notification_history WHERE event_key = $1 LIMIT 1",
-            [eventKey]
-          );
-          if (existing.rows.length === 0) {
-            await createNotification({
-              movement_reference: null,
-              station_code: null,
-              notification_type: "DuplicateODR",
-              type: "DuplicateODR",
-              title: `${duplicatesFound} Duplicate Sr.No(s) Found`,
-              message: `Batch ${batchId} - ${duplicatesFound} Sr.No values appear more than once in the uploaded file.`,
-              severity: "warning",
-              batch_id: batchId,
-            });
-          }
-        }
-
         const existingIndents = await listRecords("MaturedIndent", {
           sort: "-created_date",
           limit: 500,
@@ -1193,28 +1196,6 @@ app.post(
         );
         missingODRs = unmatchedIndents.length;
 
-        if (missingODRs > 0) {
-          const eventKey = `MissingODR|${batchId}|${missingODRs}`;
-          const existing = await pool.query(
-            "SELECT id FROM notification_history WHERE event_key = $1 LIMIT 1",
-            [eventKey]
-          );
-          if (existing.rows.length === 0) {
-            await createNotification({
-              movement_reference: null,
-              station_code: null,
-              notification_type: "MissingODR",
-              type: "MissingODR",
-              title: `${missingODRs} Missing ODR Alert(s)`,
-              message: `Matured Indents without matching ODRs: ${unmatchedIndents
-                .slice(0, 3)
-                .map((indent) => indent.indent_number)
-                .join(", ")}${missingODRs > 3 ? "..." : ""}`,
-              severity: "error",
-              batch_id: batchId,
-            });
-          }
-        }
       } else {
         await createRecords("MaturedIndent", parsedRecords);
         insertedRecords = parsedRecords.length;
@@ -1229,28 +1210,6 @@ app.post(
         );
         missingODRs = unmatchedIndents.length;
 
-        if (missingODRs > 0) {
-          const eventKey = `MissingODR|${batchId}|${missingODRs}`;
-          const existing = await pool.query(
-            "SELECT id FROM notification_history WHERE event_key = $1 LIMIT 1",
-            [eventKey]
-          );
-          if (existing.rows.length === 0) {
-            await createNotification({
-              movement_reference: null,
-              station_code: null,
-              notification_type: "MissingODR",
-              type: "MissingODR",
-              title: `${missingODRs} Indent(s) Without Matching ODR`,
-              message: `Indents with no ODR match: ${unmatchedIndents
-                .slice(0, 3)
-                .map((indent) => indent.indent_number)
-                .join(", ")}${missingODRs > 3 ? "..." : ""}`,
-              severity: "error",
-              batch_id: batchId,
-            });
-          }
-        }
       }
 
       const totalValidAcrossSheets = sheetWiseStats.reduce(
@@ -1604,6 +1563,42 @@ app.post(
     }
   }
 );
+
+app.get("/api/notifications", requireAuth, async (req, res, next) => {
+  try {
+    const userId = String(req.auth?.id || req.auth?.sub || "");
+    const rows = await listRecords("RailNotification", { sort: "-created_date", limit: 100 });
+    const allowed = rows.filter((item) => ["inward", "outward"].includes(String(item.type || "").toLowerCase()));
+    res.json(allowed.map((item) => ({ ...item, is_read: (item.read_by || []).includes(userId) })));
+  } catch (error) { next(error); }
+});
+
+app.post("/api/notifications/mark-all-read", requireAuth, async (req, res, next) => {
+  try {
+    const userId = String(req.auth?.id || req.auth?.sub || "");
+    if (!userId) return res.status(401).json({ error: "Unauthorized" });
+    const rows = await listRecords("RailNotification", { sort: "-created_date", limit: 10000 });
+    const allowed = rows.filter((item) => ["inward", "outward"].includes(String(item.type || "").toLowerCase()));
+    let updated = 0;
+    for (const item of allowed) {
+      const readBy = [...new Set([...(Array.isArray(item.read_by) ? item.read_by : []), userId])];
+      if (readBy.length !== (item.read_by || []).length) { await updateRecord("RailNotification", item.id, { read_by: readBy }); updated += 1; }
+    }
+    res.json({ success: true, updated });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/notifications/:id/read", requireAuth, async (req, res, next) => {
+  try {
+    const userId = String(req.auth?.id || req.auth?.sub || "");
+    const rows = await listRecords("RailNotification", { filter: { id: req.params.id }, limit: 1 });
+    const item = rows[0];
+    if (!item || !["inward", "outward"].includes(String(item.type || "").toLowerCase())) return res.status(404).json({ error: "Notification not found" });
+    const readBy = [...new Set([...(Array.isArray(item.read_by) ? item.read_by : []), userId])];
+    await updateRecord("RailNotification", item.id, { read_by: readBy });
+    res.json({ success: true });
+  } catch (error) { next(error); }
+});
 
 app.get("/api/entities/:entityName", requireAuth, async (req, res, next) => {
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -2208,6 +2203,7 @@ const MASTER_CATALOGS = {
   division: { table: "division_master", kind: "generic", label: "Division" },
   station: { table: "station_master", kind: "station", label: "Station" },
   commodity: { table: "commodity_master", kind: "typedCommodity", type: "Commodity", label: "Commodity" },
+  rakeCommodity: { table: "commodity_master", kind: "typedCommodity", type: "Rake CMDT", label: "Rake CMDT" },
   company: { table: "commodity_master", kind: "typedCommodity", type: "Company", label: "Company" },
   product: { table: "commodity_master", kind: "typedCommodity", type: "Product", label: "Product" },
 };
@@ -2219,6 +2215,8 @@ const MASTER_CATALOG_ALIASES = {
   divisions: "division",
   stations: "station",
   commodities: "commodity",
+  "rake-cmdt": "rakeCommodity",
+  rake_cmdt: "rakeCommodity",
 };
 
 const MASTER_CATALOG_RESPONSE_KEYS = {
@@ -2435,7 +2433,6 @@ app.get(
 app.get(
   "/api/masters/catalog/:master",
   requireAuth,
-  requireRoles(ADMIN_ROLES),
   async (req, res) => {
     const masterKey = resolveMasterKey(req.params.master);
     const config = MASTER_CATALOGS[masterKey];

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronDown, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { createPortal } from "react-dom";
 
 function normalizeOption(option) {
   if (typeof option === "string") {
@@ -32,6 +33,7 @@ export default function MultiSelectFilter({
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const rootRef = useRef(null);
+  const menuRef = useRef(null);
   const searchRef = useRef(null);
   const selectedSet = useMemo(() => new Set(selected), [selected]);
 
@@ -53,7 +55,7 @@ export default function MultiSelectFilter({
 
   useEffect(() => {
     function handleOutsideClick(event) {
-      if (!rootRef.current?.contains(event.target)) {
+      if (!rootRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) {
         setOpen(false);
         setQuery("");
       }
@@ -149,12 +151,13 @@ export default function MultiSelectFilter({
         />
       </button>
 
-      {open && (
+      {open && createPortal(
         <div
+          ref={menuRef}
           className={cn(
-            "absolute z-50 mt-1 w-72 overflow-hidden rounded-lg border border-border bg-card shadow-xl",
-            align === "right" ? "right-0" : "left-0"
+            "fixed z-[1000] w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-border bg-card shadow-xl"
           )}
+          style={(() => { const rect = rootRef.current?.getBoundingClientRect(); const width = Math.max(rect?.width || 176, 288); const left = align === "right" ? Math.max(16, (rect?.right || width) - width) : Math.min(rect?.left || 16, window.innerWidth - width - 16); return { top: Math.min((rect?.bottom || 0) + 4, window.innerHeight - 360), left, width }; })()}
           onKeyDown={handleKeyDown}
         >
           <div className="border-b border-border p-2">
@@ -234,7 +237,7 @@ export default function MultiSelectFilter({
           <div className="border-t border-border px-3 py-1.5 text-[10px] text-muted-foreground">
             {filteredOptions.length} of {normalizedOptions.length} options
           </div>
-        </div>
+        </div>, document.body
       )}
     </div>
   );

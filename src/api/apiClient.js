@@ -74,6 +74,15 @@ function createEntityApi(entityName) {
 }
 
 export const apiClient = {
+  readOnlyMasters: {
+    states: () => request("/api/masters/states"),
+    districts: (state = "") => request(`/api/masters/districts${state ? `?state=${encodeURIComponent(state)}` : ""}`),
+  },
+  notifications: {
+    list: () => request("/api/notifications"),
+    markRead: (id) => request(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
+    markAllRead: () => request("/api/notifications/mark-all-read", { method: "POST" }),
+  },
   // --- Upgraded Phase 1: Explicit Sub-Objects Expected by Dropdowns & Admin views ---
   stateMaster: {
     list: (params) => {

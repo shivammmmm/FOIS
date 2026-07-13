@@ -31,8 +31,6 @@ const DEFAULT_FILTERS = {
   stations: [],
   commodities: [],
   rakeCmdts: [],
-  fromDate: "",
-  toDate: "",
 };
 
 export default function OutwardMonitor() {
@@ -130,13 +128,8 @@ export default function OutwardMonitor() {
     const q = filters.search.trim().toLowerCase();
 
     return allRecords.filter((record) => {
-      const departureDate = record.departure_date || "";
       const state = getSourceState(record);
       const district = getSourceDistrict(record);
-
-      const matchDates =
-        (!filters.fromDate || departureDate >= filters.fromDate) &&
-        (!filters.toDate || departureDate <= filters.toDate);
 
       return (
         recordMatchesSearch(record, q) &&
@@ -145,8 +138,7 @@ export default function OutwardMonitor() {
         optionMatches(filters.districts, district) &&
         optionMatches(filters.stations, record.station_from || "") &&
         optionMatches(filters.commodities, getCommodityCode(record)) &&
-        optionMatches(filters.rakeCmdts, getRakeCmdtCode(record)) &&
-        matchDates
+        optionMatches(filters.rakeCmdts, getRakeCmdtCode(record))
       );
     });
   }, [allRecords, filters]);
@@ -173,8 +165,6 @@ export default function OutwardMonitor() {
       stations: normalizeMultiValue(nextFilters.stations ?? nextFilters.selectedStations),
       commodities: normalizeMultiValue(nextFilters.commodities ?? nextFilters.filterComm),
       rakeCmdts: normalizeMultiValue(nextFilters.rakeCmdts ?? nextFilters.filterRakeCmdt),
-      fromDate: nextFilters.fromDate || "",
-      toDate: nextFilters.toDate || "",
     });
     resetPage();
   }
@@ -210,7 +200,7 @@ export default function OutwardMonitor() {
           </p>
         </div>
 
-        <div className="flex flex-wrap items-end gap-2">
+        <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           <select
             value={filters.division}
             onChange={(event) => {
@@ -232,10 +222,7 @@ export default function OutwardMonitor() {
             ))}
           </select>
 
-          <DateInput label="From Date" value={filters.fromDate} onChange={(value) => setFilter("fromDate", value)} />
-          <DateInput label="To Date" value={filters.toDate} onChange={(value) => setFilter("toDate", value)} />
-
-          <MultiSelectFilter label="State" selected={filters.states} onChange={(value) => setFilter("states", value)} options={options.states} placeholder="All States" />
+          <MultiSelectFilter label="State" selected={filters.states} onChange={(value) => { setFilters((prev) => ({ ...prev, states: value, districts: [], stations: [] })); resetPage(); }} options={options.states} placeholder="All States" />
           <MultiSelectFilter label="District" selected={filters.districts} onChange={(value) => setFilter("districts", value)} options={options.districts} placeholder="All Districts" />
           <MultiSelectFilter label="Station" selected={filters.stations} onChange={(value) => setFilter("stations", value)} options={options.stations} placeholder="All Stations" align="right" />
           <MultiSelectFilter
@@ -390,20 +377,6 @@ export default function OutwardMonitor() {
 
       <FreightDetailsModal record={selectedRecord} onClose={() => setSelectedRecord(null)} />
     </div>
-  );
-}
-
-function DateInput({ label, value, onChange }) {
-  return (
-    <label className="flex flex-col">
-      <span className="mb-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{label}</span>
-      <input
-        type="date"
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="rounded-lg border border-border bg-muted px-3 py-2 text-sm text-foreground outline-none"
-      />
-    </label>
   );
 }
 

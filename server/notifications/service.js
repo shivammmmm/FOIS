@@ -50,7 +50,7 @@ export async function createNotification({
   notification_type,
 
   // RailNotification fields
-  type, // maps to RailNotification.type (MissingODR, DuplicateODR, etc.)
+  type, // maps to the Inward or Outward RailNotification type
   title,
   message,
   severity = "info",
@@ -64,6 +64,11 @@ export async function createNotification({
 } = {}) {
   // Defensive normalizations
   const normalized_notification_type = String(notification_type ?? type ?? "");
+  const normalizedMovementType = String(type ?? normalized_notification_type).toLowerCase();
+  if (!['inward', 'outward'].includes(normalizedMovementType)) {
+    console.info('[NotificationDelivery] skipped non-user movement notification', { notification_type: normalized_notification_type, type });
+    return { created: false, skipped: true, reason: 'unsupported_user_notification_type' };
+  }
   const dedup = buildDedupSelector({
     movement_reference: movement_reference ?? null,
     station_code: station_code ?? null,

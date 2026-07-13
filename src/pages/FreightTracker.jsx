@@ -28,6 +28,8 @@ const SHEET_COLUMNS = [
   "CNSR",
   "CNSG",
   "CMDT",
+  "RAKE CMDT",
+  "Upload Date",
   "DSTN",
   "INDENTED UNTS",
   "SUPPLIED UNTS",
@@ -49,6 +51,7 @@ export default function FreightTracker() {
   const didLoadPersisted = useRef(false);
 
   const [records, setRecords] = useState([]);
+  const [uploadDates, setUploadDates] = useState(new Map());
   const [savedFilters, setSavedFilters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({ ...DEFAULT_FILTERS, search: initialSearch });
@@ -60,8 +63,12 @@ export default function FreightTracker() {
     const load = async () => {
       setLoading(true);
       try {
-        const data = await base44.entities.FreightMovement.list("-created_date", 50000);
+        const [data, uploads] = await Promise.all([
+          base44.entities.FreightMovement.list("-created_date", 50000),
+          base44.entities.UploadLog.list("-created_date", 1000).catch(() => []),
+        ]);
         setRecords(data || []);
+        setUploadDates(new Map((uploads || []).map((upload) => [String(upload.batch_id || upload.upload_id || upload.id), upload.uploaded_at || upload.upload_time || upload.created_date])));
         if (user?.id) {
           const rows = await base44.entities.SavedFilter.filter(
             { user_id: user.id },
@@ -97,8 +104,8 @@ export default function FreightTracker() {
   }, [initialSearch, user?.id]);
 
   const sheetRows = useMemo(
-    () => records.map((record) => ({ record, row: buildSheetRow(record) })),
-    [records]
+    () => records.map((record) => ({ record, row: buildSheetRow(record, uploadDates) })),
+    [records, uploadDates]
   );
 
   const filterOptions = useMemo(() => {
@@ -427,7 +434,8 @@ function LoadingTable() {
   );
 }
 
-function buildSheetRow(record) {
+function buildSheetRow(record, uploadDates) {
+  const uploadKey = String(record.batch_id || record.upload_id || "");
   return {
     DVSN: readValue(record, "DVSN", "division"),
     "STTN FROM": readValue(record, "STTN FROM", "station_from"),
@@ -437,11 +445,19 @@ function buildSheetRow(record) {
     CNSR: readValue(record, "CNSR", "cnsr", "company_code", "company"),
     CNSG: readValue(record, "CNSG", "cnsg"),
     CMDT: readValue(record, "CMDT", "Commodity", "commodity_code", "commodity"),
+    "RAKE CMDT": readValue(record, "RAKE CMDT", "Rake CMDT", "rake_commodity_code", "rake_cmdt"),
+    "Upload Date": formatUploadDate(uploadDates.get(uploadKey)),
     DSTN: readValue(record, "DSTN", "station_to"),
     "INDENTED UNTS": readValue(record, "INDENTED UNTS", "indented_units"),
     "SUPPLIED UNTS": readValue(record, "SUPPLIED UNTS", "supplied_units", "wagons"),
     "SUPPLIED TIME": formatSheetTime(readValue(record, "SUPPLIED TIME", "supplied_time", "UpdatedTime")),
   };
+}
+
+function formatUploadDate(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
 function readValue(record, ...keys) {
