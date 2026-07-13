@@ -42,21 +42,18 @@ const MASTER_TYPES = [
   {
     key: "district",
     label: "District Master",
-    importHeaders: ["StateCode", "DistrictName", "DistrictCode"],
-    columns: ["parent_code", "code", "name"],
+    importHeaders: ["StateCode", "DistrictName"],
+    columns: ["parent_code", "name"],
     fields: [
       { name: "parent_code", label: "Parent State", type: "select", source: "states" },
-      { name: "code", label: "District Code", placeholder: "NGP" },
       { name: "name", label: "District Name", placeholder: "Nagpur" },
     ],
     importMap: {
       parent_code: ["StateCode"],
-      code: ["DistrictCode"],
       name: ["DistrictName"],
     },
     validate: (form) => requireFields(form, [
       ["parent_code", "Parent State"],
-      ["code", "District Code"],
       ["name", "District Name"],
     ]),
   },
@@ -312,6 +309,28 @@ export default function MasterManagement() {
     }
   }
 
+  async function deleteAllDistricts() {
+    if (activeKey !== "district" || saving || total === 0) return;
+    const confirmed = window.confirm(
+      `Delete all ${total} district records?\n\nThis cannot be undone. If any district is linked to Station Master, nothing will be deleted.`
+    );
+    if (!confirmed) return;
+    setSaving(true);
+    setMessage({ kind: "info", text: "Deleting all district records..." });
+    try {
+      const result = await apiClient.districtMaster.deleteAll();
+      setPage(1);
+      setSearch("");
+      resetFormFor(activeMaster);
+      await Promise.all([loadRows(), loadReferences()]);
+      setMessage({ kind: "success", text: `${result?.deleted_count || 0} district record(s) deleted.` });
+    } catch (error) {
+      setMessage({ kind: "error", text: error?.message || "Failed to delete all district records." });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function handleImport(event) {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -395,6 +414,17 @@ export default function MasterManagement() {
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
+                {activeKey === "district" && (
+                  <button
+                    type="button"
+                    onClick={deleteAllDistricts}
+                    disabled={saving || total === 0}
+                    className="inline-flex items-center gap-2 rounded-lg border border-destructive/40 px-3 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete All
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}

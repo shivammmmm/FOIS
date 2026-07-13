@@ -787,6 +787,12 @@ app.put(
   mastersController.updateDistrict
 );
 app.delete(
+  "/api/district-master",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  mastersController.deleteAllDistricts
+);
+app.delete(
   "/api/district-master/:id",
   requireAuth,
   requireRoles(ADMIN_ROLES),
@@ -2506,9 +2512,12 @@ app.post(
           return result.rows[0];
         }
 
-        const code = String(body.code || "").trim().toUpperCase();
         const name = String(body.name || "").trim();
-        if (!code || !name) throw new Error(`${config.label} code and name are required`);
+        const generatedDistrictCode = masterKey === "district"
+          ? `${parentCode}_${name}`.trim().replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase()
+          : "";
+        const code = String(body.code || generatedDistrictCode).trim().toUpperCase();
+        if (!code || !name) throw new Error(masterKey === "district" ? "District name is required" : `${config.label} code and name are required`);
         let parentCode = body.parent_code ? String(body.parent_code).trim().toUpperCase() : null;
         if (masterKey === "district") {
           parentCode = await requireMasterReference(pool, "state_master", parentCode, "Parent State");
@@ -2596,9 +2605,13 @@ app.put(
         if (masterKey === "division") {
           parentCode = await requireMasterReference(pool, "zone_master", parentCode, "Zone");
         }
-        const code = String(body.code || "").trim().toUpperCase();
         const name = String(body.name || "").trim();
-        if (!code || !name) throw new Error(`${config.label} code and name are required`);
+        let code = String(body.code || "").trim().toUpperCase();
+        if (masterKey === "district") {
+          const existing = await pool.query(`SELECT code FROM district_master WHERE id = $1 LIMIT 1`, [req.params.id]);
+          code = existing.rows[0]?.code || "";
+        }
+        if (!code || !name) throw new Error(masterKey === "district" ? "District name is required" : `${config.label} code and name are required`);
         const result = await pool.query(
           `UPDATE ${config.table} SET code = $1, name = $2, parent_code = $3, updated_at = NOW()
            WHERE id = $4 RETURNING *`,

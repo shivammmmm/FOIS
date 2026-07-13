@@ -124,6 +124,7 @@ export const apiClient = {
       request(`/api/district-master/${encodeURIComponent(id)}`, {
         method: "DELETE",
       }),
+    deleteAll: () => request("/api/district-master", { method: "DELETE" }),
   },
 
   // --- Upgraded Phase 2: Operations Dashboard Filter Matrix ---

@@ -180,7 +180,7 @@ export async function createDistrict(req, res) {
 
     const normParent = normalizeCode(parent_code);
     const normName = normalizeName(name);
-    const normCode = normalizeCode(name.replace(/\s+/g, "_"));
+    const normCode = normalizeCode(`${normParent}_${name}`.replace(/\s+/g, "_"));
     const id = `district_master_${normParent}_${normCode}`;
 
     // Verify parent state exists
@@ -222,7 +222,6 @@ export async function updateDistrict(req, res) {
 
     const normParent = normalizeCode(parent_code);
     const normName = normalizeName(name);
-    const normCode = normalizeCode(name.replace(/\s+/g, "_"));
 
     // Verify parent state exists
     const stateCheck = await pool.query(`SELECT id FROM state_master WHERE code = $1`, [normParent]);
@@ -241,10 +240,10 @@ export async function updateDistrict(req, res) {
 
     const result = await pool.query(
       `UPDATE district_master 
-       SET code = $1, name = $2, parent_code = $3, active = $4, updated_at = NOW() 
-       WHERE id = $5 
+       SET name = $1, parent_code = $2, active = $3, updated_at = NOW() 
+       WHERE id = $4 
        RETURNING *`,
-      [normCode, normName, normParent, active !== false, id]
+      [normName, normParent, active !== false, id]
     );
 
     if (result.rows.length === 0) {
@@ -279,5 +278,40 @@ export async function deleteDistrict(req, res) {
   } catch (error) {
     console.error("Error in deleteDistrict:", error);
     return res.status(500).json({ error: "Internal server error deleting district" });
+  }
+}
+
+export async function deleteAllDistricts(_req, res) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const dependency = await client.query(
+      `SELECT d.code, d.name
+       FROM district_master d
+       WHERE EXISTS (
+         SELECT 1 FROM station_master s
+         WHERE UPPER(s.district) = UPPER(d.code)
+            OR UPPER(s.district) = UPPER(d.name)
+       )
+       ORDER BY d.name ASC
+       LIMIT 10`
+    );
+    if (dependency.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: "Cannot delete all districts because some are linked to Station Master.",
+        linked_districts: dependency.rows,
+      });
+    }
+
+    const result = await client.query("DELETE FROM district_master RETURNING id");
+    await client.query("COMMIT");
+    return res.json({ message: "All districts deleted successfully", deleted_count: result.rowCount });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    console.error("Error in deleteAllDistricts:", error);
+    return res.status(500).json({ error: "Internal server error deleting all districts" });
+  } finally {
+    client.release();
   }
 }

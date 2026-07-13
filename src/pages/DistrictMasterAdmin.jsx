@@ -143,6 +143,28 @@ export default function DistrictMasterAdmin() {
     }
   };
 
+  const handleDeleteAll = async () => {
+    if (saving || total === 0) return;
+    const ok = window.confirm(
+      `Delete all ${total} district records?\n\nThis cannot be undone. If any district is linked to Station Master, no records will be deleted.`
+    );
+    if (!ok) return;
+    try {
+      setSaving(true);
+      const result = await apiClient.districtMaster.deleteAll();
+      alert(`${result?.deleted_count || 0} district records deleted.`);
+      setPage(1);
+      setSearch("");
+      setFilterState("All");
+      await load();
+    } catch (error) {
+      console.error(error);
+      alert(error?.message || "Failed to delete all districts");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="p-6 space-y-5 animate-fade-in">
       {/* Header Controls */}
@@ -153,12 +175,17 @@ export default function DistrictMasterAdmin() {
             Configure internal district parameters across parent state networks
           </p>
         </div>
-        <button
-          onClick={openAdd}
-          className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors"
-        >
-          <Plus className="w-4 h-4" /> Add District
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" onClick={handleDeleteAll} disabled={saving || total === 0} className="flex items-center gap-2 rounded-lg border border-destructive/40 px-4 py-2 text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50">
+            <Trash2 className="w-4 h-4" /> Delete All
+          </button>
+          <button
+            onClick={openAdd}
+            className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors"
+          >
+            <Plus className="w-4 h-4" /> Add District
+          </button>
+        </div>
       </div>
 
       {/* Filter and Search Action Row */}
@@ -171,7 +198,7 @@ export default function DistrictMasterAdmin() {
               setPage(1);
               setSearch(e.target.value);
             }}
-            placeholder="Search district name or code..."
+            placeholder="Search district name..."
             className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
           />
           {search && (
@@ -208,7 +235,7 @@ export default function DistrictMasterAdmin() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40">
-                {["District Name", "Generated Code", "Belongs To State", "Active Indicator", ""].map((h) => (
+                {["District Name", "Belongs To State", "Active Indicator", ""].map((h) => (
                   <th
                     key={h}
                     className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider"
@@ -222,7 +249,7 @@ export default function DistrictMasterAdmin() {
               {loading ? (
                 [...Array(6)].map((_, i) => (
                   <tr key={i} className="border-b border-border/50">
-                    {[...Array(5)].map((__, j) => (
+                    {[...Array(4)].map((__, j) => (
                       <td key={j} className="px-4 py-3">
                         <div className="h-4 bg-muted rounded animate-pulse" />
                       </td>
@@ -231,7 +258,7 @@ export default function DistrictMasterAdmin() {
                 ))
               ) : rows.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={4} className="px-4 py-12 text-center text-sm text-muted-foreground">
                     No verified district constraints mapped to active state targets.
                   </td>
                 </tr>
@@ -242,7 +269,6 @@ export default function DistrictMasterAdmin() {
                     className="border-b border-border/50 hover:bg-muted/30 transition-colors"
                   >
                     <td className="px-4 py-3 font-medium text-foreground">{r?.name || "-"}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-muted-foreground">{r?.code || "-"}</td>
                     <td className="px-4 py-3 font-mono text-sm font-semibold text-primary">
                       {r?.parent_code || "-"}
                     </td>
