@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, Save, Search, Train } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
-import * as XLSX from "xlsx";
 import { base44 } from "@/api/base44Client";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
 import FreightDetailsModal from "@/components/FreightDetailsModal";
 import { useAuth } from "@/lib/AuthContext";
+import { registerStationMetaFromRecords } from "@/utils/stationMaster";
+import { formatFoisDate, formatFoisTime } from "@/utils/foisDateTime";
 import {
   clearPersistentFilters,
   hasSavedFilterValues,
@@ -18,6 +19,8 @@ import {
 const PER_PAGE = 25;
 const FILTER_SOURCE = "foisReports";
 const REPORT_SOURCE = "FOIS Reports";
+
+let reportSessionCache = null;
 
 const SHEET_COLUMNS = [
   "DVSN",
@@ -50,17 +53,28 @@ export default function FreightTracker() {
   const initialSearch = searchParams.get("odr") || "";
   const didLoadPersisted = useRef(false);
 
-  const [records, setRecords] = useState([]);
-  const [uploadDates, setUploadDates] = useState(new Map());
-  const [uploadDateError, setUploadDateError] = useState("");
-  const [savedFilters, setSavedFilters] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const cachedForUser = reportSessionCache?.userId === user?.id ? reportSessionCache : null;
+  const [records, setRecords] = useState(cachedForUser?.records || []);
+  const [uploadDates, setUploadDates] = useState(cachedForUser?.uploadDates || new Map());
+  const [uploadDateError, setUploadDateError] = useState(cachedForUser?.uploadDateError || "");
+  const [savedFilters, setSavedFilters] = useState(cachedForUser?.savedFilters || []);
+  const [loading, setLoading] = useState(!cachedForUser);
   const [filters, setFilters] = useState({ ...DEFAULT_FILTERS, search: initialSearch });
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
+  const [showUnmappedOnly, setShowUnmappedOnly] = useState(false);
 
   useEffect(() => {
+    if (reportSessionCache?.userId === user?.id) {
+      setRecords(reportSessionCache.records);
+      setUploadDates(reportSessionCache.uploadDates);
+      setUploadDateError(reportSessionCache.uploadDateError);
+      setSavedFilters(reportSessionCache.savedFilters);
+      setLoading(false);
+      return;
+    }
+
     const load = async () => {
       setLoading(true);
       try {
@@ -70,21 +84,31 @@ export default function FreightTracker() {
             .then((uploads) => ({ uploads, error: "" }))
             .catch((error) => ({ uploads: [], error: error?.message || "Upload metadata could not be loaded" })),
         ]);
-        setRecords(extractItems(data));
+        const nextRecords = extractItems(data);
+        registerStationMetaFromRecords(nextRecords);
+        const nextUploadDates = buildUploadDateMap(extractItems(uploadResult.uploads));
+        let nextSavedFilters = [];
+        setRecords(nextRecords);
         setUploadDateError(uploadResult.error);
-        setUploadDates(buildUploadDateMap(extractItems(uploadResult.uploads)));
+        setUploadDates(nextUploadDates);
         if (user?.id) {
           const rows = await base44.entities.SavedFilter.filter(
             { user_id: user.id },
             "-created_at",
             100
           );
-          setSavedFilters(
-            (rows || []).filter((row) =>
+          nextSavedFilters = (rows || []).filter((row) =>
               ["FOIS Reports", "Freight Tracker", "Reports"].includes(row.source)
-            )
-          );
+            );
+          setSavedFilters(nextSavedFilters);
         }
+        reportSessionCache = {
+          userId: user?.id,
+          records: nextRecords,
+          uploadDates: nextUploadDates,
+          uploadDateError: uploadResult.error,
+          savedFilters: nextSavedFilters,
+        };
       } catch (error) {
         console.error("[FOIS Reports] load failed:", error);
       } finally {
@@ -133,10 +157,23 @@ export default function FreightTracker() {
     };
   }, [sheetRows]);
 
+  const unmappedStations = useMemo(() => {
+    const stations = new Map();
+    for (const record of records) {
+      addUnmappedStation(stations, record.station_from, record.from_station_name, "Source");
+      addUnmappedStation(stations, record.station_to, record.to_station_name, "Destination");
+    }
+    return [...stations.values()].sort((a, b) => a.code.localeCompare(b.code));
+  }, [records]);
+  const unmappedCodes = useMemo(
+    () => new Set(unmappedStations.map((station) => station.code)),
+    [unmappedStations]
+  );
+
   const filteredRows = useMemo(() => {
     const q = filters.search.trim().toLowerCase();
 
-    return sheetRows.filter(({ row }) => {
+    return sheetRows.filter(({ record, row }) => {
       const matchesSearch =
         !q ||
         SHEET_COLUMNS.some((column) =>
@@ -144,6 +181,7 @@ export default function FreightTracker() {
         );
 
       return (
+        (!showUnmappedOnly || unmappedCodes.has(String(record.station_from || "").trim().toUpperCase()) || unmappedCodes.has(String(record.station_to || "").trim().toUpperCase())) &&
         matchesSearch &&
         optionMatches(filters.divisions, row.DVSN) &&
         optionMatches(filters.stationsFrom, row["STTN FROM"]) &&
@@ -151,7 +189,7 @@ export default function FreightTracker() {
         optionMatches(filters.destinations, row.DSTN)
       );
     });
-  }, [filters, sheetRows]);
+  }, [filters, sheetRows, showUnmappedOnly, unmappedCodes]);
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / PER_PAGE));
   const visibleRows = filteredRows.slice((page - 1) * PER_PAGE, page * PER_PAGE);
@@ -190,7 +228,11 @@ export default function FreightTracker() {
       source: REPORT_SOURCE,
       filters,
     });
-    setSavedFilters((prev) => [saved, ...prev]);
+    setSavedFilters((prev) => {
+      const next = [saved, ...prev];
+      if (reportSessionCache?.userId === user.id) reportSessionCache.savedFilters = next;
+      return next;
+    });
   }
 
   function clearFilters() {
@@ -199,9 +241,10 @@ export default function FreightTracker() {
     resetPage();
   }
 
-  function exportExcel() {
+  async function exportExcel() {
     setExporting(true);
     try {
+      const XLSX = await import("xlsx");
       const exportRows = filteredRows.map(({ row }) => row);
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(
@@ -216,7 +259,7 @@ export default function FreightTracker() {
   }
 
   return (
-    <div className="p-4 lg:p-6 space-y-5 animate-fade-in">
+    <div className="p-4 lg:p-6 space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10">
@@ -325,6 +368,33 @@ export default function FreightTracker() {
         records
         {filteredRows.length !== records.length && ` (filtered from ${records.length})`}
       </div>
+      {unmappedStations.length > 0 && (
+        <section className="rounded-lg border border-amber-400/40 bg-amber-50 p-3 text-amber-950">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-sm font-semibold">Station Master Missing: {unmappedStations.length}</div>
+              <p className="mt-0.5 text-xs text-amber-800">These FOIS station codes were found in records but do not have station-master enrichment.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setShowUnmappedOnly((value) => !value);
+                setPage(1);
+              }}
+              className="rounded-lg border border-amber-500/50 bg-white px-3 py-1.5 text-xs font-semibold hover:bg-amber-100"
+            >
+              {showUnmappedOnly ? "Show All Records" : "Show Unmapped Records Only"}
+            </button>
+          </div>
+          <div className="mt-3 flex max-h-24 flex-wrap gap-1.5 overflow-y-auto">
+            {unmappedStations.map((station) => (
+              <span key={station.code} className="rounded border border-amber-300 bg-white px-2 py-1 font-mono text-xs" title={station.locations.join(" & ")}>
+                {station.name || station.code}
+              </span>
+            ))}
+          </div>
+        </section>
+      )}
       {uploadDateError && <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700">Upload Date unavailable: {uploadDateError}</div>}
 
       <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
@@ -451,8 +521,8 @@ function buildSheetRow(record, uploadDates) {
     DVSN: readValue(record, "DVSN", "division"),
     "STTN FROM": readValue(record, "STTN FROM", "station_from"),
     "NO.": readValue(record, "NO.", "indent_no", "FNR", "odr_number"),
-    DATE: formatSheetDate(readValue(record, "DATE", "indent_date", "departure_date")),
-    TIME: formatSheetTime(readValue(record, "TIME", "indent_time", "Time")),
+    DATE: formatFoisDate(readValue(record, "DATE", "indent_date", "departure_date")),
+    TIME: formatFoisTime(readValue(record, "TIME", "indent_time", "Time")),
     CNSR: readValue(record, "CNSR", "cnsr", "company_code", "company"),
     CNSG: readValue(record, "CNSG", "cnsg"),
     CMDT: readValue(record, "CMDT", "Commodity", "commodity_code", "commodity"),
@@ -461,7 +531,7 @@ function buildSheetRow(record, uploadDates) {
     DSTN: readValue(record, "DSTN", "station_to"),
     "INDENTED UNTS": readValue(record, "INDENTED UNTS", "indented_units"),
     "SUPPLIED UNTS": readValue(record, "SUPPLIED UNTS", "supplied_units", "wagons"),
-    "SUPPLIED TIME": formatSheetTime(readValue(record, "SUPPLIED TIME", "supplied_time", "UpdatedTime")),
+    "SUPPLIED TIME": formatFoisTime(readValue(record, "SUPPLIED TIME", "supplied_time", "UpdatedTime")),
   };
 }
 
@@ -522,43 +592,12 @@ function dash(value) {
   return value;
 }
 
-function formatSheetDate(value) {
-  const text = String(value ?? "").trim();
-  if (!text) return "";
-  if (!isNumericText(text)) return text;
-
-  const serial = Number(text);
-  if (!Number.isFinite(serial) || serial <= 0) return text;
-
-  const epoch = Date.UTC(1899, 11, 30);
-  const date = new Date(epoch + (Math.floor(serial) + 6) * 86400000);
-  if (Number.isNaN(date.getTime())) return text;
-
-  return [
-    String(date.getUTCDate()).padStart(2, "0"),
-    String(date.getUTCMonth() + 1).padStart(2, "0"),
-    date.getUTCFullYear(),
-  ].join("-");
-}
-
-function formatSheetTime(value) {
-  const text = String(value ?? "").trim();
-  if (!text) return "";
-  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(text)) return text.slice(0, 5);
-  if (!isNumericText(text)) return text;
-
-  const numeric = Number(text);
-  if (!Number.isFinite(numeric)) return text;
-
-  const fraction = ((numeric % 1) + 1) % 1;
-  const totalMinutes = Math.round(fraction * 24 * 60) % (24 * 60);
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-}
-
-function isNumericText(value) {
-  return /^-?\d+(\.\d+)?$/.test(String(value || "").trim());
+function addUnmappedStation(map, stationCode, stationName, location) {
+  const code = String(stationCode || "").trim().toUpperCase();
+  if (!code || String(stationName || "").trim()) return;
+  const current = map.get(code) || { code, name: code, locations: [] };
+  if (!current.locations.includes(location)) current.locations.push(location);
+  map.set(code, current);
 }
 
 function toSortedOptions(values) {

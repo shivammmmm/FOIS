@@ -9,7 +9,8 @@ import {
   getBusinessRakeCmdtCode as getRakeCmdtCode,
   getBusinessRakeCmdtDisplay as getRakeCmdtDisplay,
 } from "@/utils/freightRecordFilters";
-import { formatStationNameAndCode, getStationMeta } from "@/utils/stationMaster";
+import { formatStationNameAndCode, getStationMeta, registerStationMetaFromRecords } from "@/utils/stationMaster";
+import { formatFoisDateTime } from "@/utils/foisDateTime";
 import {
   clearPersistentFilters,
   hasSavedFilterValues,
@@ -48,6 +49,7 @@ export default function OutwardMonitor() {
       setLoading(true);
       try {
         const data = await base44.entities.FreightMovement.list("-created_date", 50000);
+        registerStationMetaFromRecords(data || []);
         const outwardOnly = (data || []).filter((record) => record.movement_type === "Outward");
         setAllRecords(outwardOnly);
         if (user?.id) {
@@ -188,7 +190,7 @@ export default function OutwardMonitor() {
   }
 
   return (
-    <div className="p-6 space-y-6 animate-fade-in">
+    <div className="p-6 space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
@@ -491,13 +493,7 @@ function getFnr(record) {
   return readRaw(record, "FNR", "FNR No", "FNR Number") || record.fnr || record.odr_number || "";
 }
 
-function formatDateTime(date, time) {
-  const dateText = String(date || "").trim();
-  const timeText = String(time || "").trim();
-  if (!dateText) return timeText;
-  if (!timeText || dateText.includes(timeText)) return dateText;
-  return `${dateText} ${timeText}`;
-}
+const formatDateTime = formatFoisDateTime;
 
 function buildFilterName(filters) {
   const parts = [

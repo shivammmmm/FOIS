@@ -1,4 +1,3 @@
-import { GENERATED_STATION_MASTER } from '@/data/stationMaster.generated';
 import { STATION_MASTER_OVERRIDES } from '@/data/stationMasterOverrides';
 import { STATION_NAMES } from './railwayDictionary';
 
@@ -10,9 +9,38 @@ const LEGACY_STATION_MASTER = Object.fromEntries(
 
 export const STATION_MASTER = {
   ...LEGACY_STATION_MASTER,
-  ...GENERATED_STATION_MASTER,
   ...STATION_MASTER_OVERRIDES,
 };
+
+export function registerStationMetaFromRecords(records = []) {
+  for (const record of Array.isArray(records) ? records : []) {
+    registerStation(record.station_from, {
+      name: record.from_station_name,
+      division: record.from_division || record.division,
+      district: record.from_district,
+      state: record.from_state,
+    });
+    registerStation(record.station_to, {
+      name: record.to_station_name,
+      division: record.to_division || record.division,
+      district: record.to_district,
+      state: record.to_state,
+    });
+  }
+}
+
+function registerStation(code, metadata = {}) {
+  const upper = normalizeCode(code);
+  if (!upper) return;
+  const existing = STATION_MASTER[upper] || { code: upper, name: upper };
+  STATION_MASTER[upper] = {
+    ...existing,
+    ...Object.fromEntries(
+      Object.entries(metadata).filter(([, value]) => value !== undefined && value !== null && value !== "")
+    ),
+    code: upper,
+  };
+}
 
 export function getStationMeta(code) {
   const upper = normalizeCode(code);

@@ -371,6 +371,12 @@ async function createEntityTable(tableName) {
     await pool.query(
       `CREATE INDEX IF NOT EXISTS ${tableName}_batch_id_idx ON ${tableName} ((data->>'batch_id'))`
     );
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS ${tableName}_created_date_desc_idx ON ${tableName} (created_date DESC)`
+    );
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS ${tableName}_movement_type_created_date_idx ON ${tableName} ((data->>'movement_type'), created_date DESC)`
+    );
 
     // Date indexes (business-date fields)
     for (const dateCol of [
@@ -742,13 +748,57 @@ export async function listRecords(entityName, options = {}) {
   if (activeStorage !== "postgres") return jsonListRecords(entityName, options);
 
   const tableName = ENTITY_TABLES[entityName];
-  const result = await pool.query(`SELECT * FROM ${tableName}`);
-  const records = result.rows
-    .map(fromRow)
-    .filter((record) => matchesCriteria(record, options.filter));
-  const sorted = sortRecords(records, options.sort);
+  const params = [];
+  const where = [];
+  const criteria = options.filter && typeof options.filter === "object"
+    ? options.filter
+    : {};
+  const directColumns = new Set([
+    "id", "created_date", "created_at", "updated_date", "updated_at",
+    "event_key", "notification_type", "station_code", "movement_reference",
+  ]);
+
+  for (const [key, value] of Object.entries(criteria)) {
+    if (value === undefined || value === null || value === "") continue;
+    const columnSql = directColumns.has(key)
+      ? key
+      : `(data ->> $${params.push(key)})`;
+
+    if (Array.isArray(value)) {
+      if (value.length === 0) continue;
+      params.push(value.map((item) => String(item)));
+      where.push(`${columnSql} = ANY($${params.length}::text[])`);
+    } else {
+      params.push(String(value));
+      where.push(`${columnSql}::text = $${params.length}`);
+    }
+  }
+
+  const { key: sortKey, desc } = normalizeSort(options.sort);
+  const safeSortKey = sortKey && /^[A-Za-z_][A-Za-z0-9_]*$/.test(sortKey)
+    ? sortKey
+    : null;
+  let orderSql = "";
+  if (safeSortKey) {
+    if (directColumns.has(safeSortKey) || safeSortKey === CREATED_DATE_KEYS[entityName]) {
+      orderSql = ` ORDER BY ${safeSortKey} ${desc ? "DESC" : "ASC"} NULLS LAST`;
+    } else if (entityName !== "notification_history") {
+      params.push(safeSortKey);
+      orderSql = ` ORDER BY (data ->> $${params.length}) ${desc ? "DESC" : "ASC"} NULLS LAST`;
+    }
+  }
+
   const parsedLimit = Number.parseInt(options.limit, 10);
-  return Number.isFinite(parsedLimit) ? sorted.slice(0, parsedLimit) : sorted;
+  const parsedOffset = Number.parseInt(options.offset, 10);
+  const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 0), 50000) : 100;
+  const offset = Number.isFinite(parsedOffset) ? Math.max(parsedOffset, 0) : 0;
+  params.push(limit, offset);
+
+  const result = await pool.query(
+    `SELECT * FROM ${tableName}${where.length ? ` WHERE ${where.join(" AND ")}` : ""}${orderSql} LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+  return result.rows.map(fromRow);
 }
 
 export async function createRecord(entityName, record) {

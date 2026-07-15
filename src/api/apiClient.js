@@ -1,4 +1,6 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
+const ENTITY_CACHE_TTL_MS = 5 * 60 * 1000;
+const entityListCache = new Map();
 
 function getToken() {
   return window.localStorage.getItem("token") || window.localStorage.getItem("base44_access_token");
@@ -18,8 +20,13 @@ async function request(path, options = {}) {
   });
 
   if (!response.ok) {
-    const details = await response.json().catch(() => ({}));
-    throw new Error(details.error || `Request failed: ${response.status}`);
+    const contentType = response.headers.get("content-type") || "";
+    const details = contentType.includes("application/json")
+      ? await response.json().catch(() => ({}))
+      : { error: await response.text().catch(() => "") };
+    const error = new Error(details.error || `Request failed: ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
 
   if (response.status === 204) return null;
@@ -28,6 +35,12 @@ async function request(path, options = {}) {
 }
 
 function createEntityApi(entityName) {
+  const invalidate = () => {
+    for (const key of entityListCache.keys()) {
+      if (key.startsWith(`${entityName}|`)) entityListCache.delete(key);
+    }
+  };
+
   return {
     list: (sortOrder, limit) => {
       const params = new URLSearchParams();
@@ -35,7 +48,18 @@ function createEntityApi(entityName) {
       if (typeof limit === "number") params.set("limit", String(limit));
 
       const query = params.toString();
-      return request(`/api/entities/${entityName}${query ? `?${query}` : ""}`);
+      const cacheKey = `${entityName}|${getToken() || "anonymous"}|${query}`;
+      const cached = entityListCache.get(cacheKey);
+      if (cached && Date.now() - cached.createdAt < ENTITY_CACHE_TTL_MS) {
+        return cached.promise;
+      }
+      const promise = request(`/api/entities/${entityName}${query ? `?${query}` : ""}`)
+        .catch((error) => {
+          entityListCache.delete(cacheKey);
+          throw error;
+        });
+      entityListCache.set(cacheKey, { createdAt: Date.now(), promise });
+      return promise;
     },
 
     filter: (criteria, sortOrder, limit) => {
@@ -48,28 +72,40 @@ function createEntityApi(entityName) {
       return request(`/api/entities/${entityName}${query ? `?${query}` : ""}`);
     },
 
-    create: (record) =>
-      request(`/api/entities/${entityName}`, {
+    create: async (record) => {
+      const result = await request(`/api/entities/${entityName}`, {
         method: "POST",
         body: JSON.stringify(record || {}),
-      }),
+      });
+      invalidate();
+      return result;
+    },
 
-    update: (id, updatedFields) =>
-      request(`/api/entities/${entityName}/${encodeURIComponent(id)}`, {
+    update: async (id, updatedFields) => {
+      const result = await request(`/api/entities/${entityName}/${encodeURIComponent(id)}`, {
         method: "PATCH",
         body: JSON.stringify(updatedFields || {}),
-      }),
+      });
+      invalidate();
+      return result;
+    },
 
-    delete: (id) =>
-      request(`/api/entities/${entityName}/${encodeURIComponent(id)}`, {
+    delete: async (id) => {
+      const result = await request(`/api/entities/${entityName}/${encodeURIComponent(id)}`, {
         method: "DELETE",
-      }),
+      });
+      invalidate();
+      return result;
+    },
 
-    bulkCreate: (records) =>
-      request(`/api/entities/${entityName}/bulk`, {
+    bulkCreate: async (records) => {
+      const result = await request(`/api/entities/${entityName}/bulk`, {
         method: "POST",
         body: JSON.stringify({ records: Array.isArray(records) ? records : [] }),
-      }),
+      });
+      invalidate();
+      return result;
+    },
   };
 }
 
@@ -194,6 +230,31 @@ export const apiClient = {
         method: "POST",
         body: JSON.stringify(payload || {}),
       }),
+    bulkImportDistricts: async (records) => {
+      try {
+        return await request("/api/masters/catalog/district/bulk", {
+          method: "POST",
+          body: JSON.stringify({ records }),
+        });
+      } catch (error) {
+        if (error?.status !== 404 || !/Cannot POST|Request failed/i.test(error?.message || "")) {
+          throw error;
+        }
+
+        let imported = 0;
+        let failed = 0;
+        const batchSize = 8;
+        for (let index = 0; index < records.length; index += batchSize) {
+          const batch = records.slice(index, index + batchSize);
+          const results = await Promise.allSettled(
+            batch.map((record) => apiClient.districtMaster.save(record))
+          );
+          imported += results.filter((result) => result.status === "fulfilled").length;
+          failed += results.filter((result) => result.status === "rejected").length;
+        }
+        return { imported, failed, fallback: true };
+      }
+    },
     update: (master, id, payload) =>
       request(`/api/masters/catalog/${encodeURIComponent(master)}/${encodeURIComponent(id)}`, {
         method: "PUT",

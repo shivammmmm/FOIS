@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import * as XLSX from "xlsx";
 import {
   Download,
   Edit2,
@@ -338,11 +337,29 @@ export default function MasterManagement() {
     setSaving(true);
     setMessage({ kind: "info", text: "Importing records..." });
     try {
+      const XLSX = await import("xlsx");
       const buffer = await file.arrayBuffer();
       const workbook = XLSX.read(buffer, { type: "array" });
       const records = workbook.SheetNames.flatMap((sheetName) =>
         XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: "" })
       );
+
+      if (activeKey === "district") {
+        const payloads = records.map((record) =>
+          normalizePayload(buildPayloadFromImport(record, activeMaster), activeMaster)
+        );
+        const invalidIndex = payloads.findIndex((payload) => activeMaster.validate(payload));
+        if (invalidIndex >= 0) {
+          throw new Error(`Row ${invalidIndex + 2}: StateCode and DistrictName are required.`);
+        }
+        const result = await apiClient.masterCatalog.bulkImportDistricts(payloads);
+        await Promise.all([loadRows(), loadReferences()]);
+        setMessage({
+          kind: result?.failed > 0 ? "warning" : "success",
+          text: `Import finished. Imported/updated: ${result?.imported || 0}, Failed: ${result?.failed || 0}.${result?.fallback ? " Compatibility mode was used; deploy/restart the updated API for faster bulk imports." : ""}`,
+        });
+        return;
+      }
 
       let imported = 0;
       let skipped = 0;
@@ -376,7 +393,8 @@ export default function MasterManagement() {
     }
   }
 
-  function exportRows() {
+  async function exportRows() {
+    const XLSX = await import("xlsx");
     const exportData = rows.map((row) =>
       Object.fromEntries(activeMaster.columns.map((column) => [columnLabel(column), row[column] || ""]))
     );

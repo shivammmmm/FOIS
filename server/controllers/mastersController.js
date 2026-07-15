@@ -144,6 +144,8 @@ export async function deleteState(req, res) {
 export async function getAllDistricts(req, res) {
   try {
     const { state, search } = req.query;
+    const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 50, 1), 500);
+    const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
     let query = `SELECT id, code, name, parent_code, active, created_at, updated_at FROM district_master`;
     const params = [];
     const conditions = [];
@@ -161,10 +163,16 @@ export async function getAllDistricts(req, res) {
     if (conditions.length > 0) {
       query += ` WHERE ` + conditions.join(" AND ");
     }
-    query += ` ORDER BY name ASC`;
+    const whereSql = conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
+    const countResult = await pool.query(
+      `SELECT COUNT(*)::integer AS total FROM district_master${whereSql}`,
+      params
+    );
+    params.push(limit, offset);
+    query += ` ORDER BY name ASC LIMIT $${params.length - 1} OFFSET $${params.length}`;
 
     const result = await pool.query(query, params);
-    return res.json(result.rows);
+    return res.json({ items: result.rows, total: countResult.rows[0]?.total || 0 });
   } catch (error) {
     console.error("Error in getAllDistricts:", error);
     return res.status(500).json({ error: "Internal server error reading districts" });

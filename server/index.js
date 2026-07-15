@@ -479,13 +479,28 @@ async function createMovementPreferenceNotifications(records, batchId) {
   for (const group of groups.values()) {
     const type = group.movementType;
     const movement = group.exemplar || {};
-    const details = [
-      movement.company_name || movement.company_code || movement.company,
-      movement.product_name || movement.product_code || movement.product,
-      movement.rake_commodity_name || movement.rake_commodity_code || movement.rake_cmdt,
-    ]
-      .filter(Boolean)
-      .join(", ");
+    const stationName = group.movementType === "Outward"
+      ? movement.from_station_name
+      : movement.to_station_name || movement.from_station_name;
+    const stationDisplay = stationName
+      ? `${stationName} (${group.stationCode})`
+      : group.stationCode;
+    const commodityName = movement.rake_commodity_name || movement.commodity_name || movement.product_name;
+    const commodityCode = movement.rake_commodity_code || movement.commodity_code || movement.product_code || movement.rake_cmdt;
+    const commodityDisplay = commodityName
+      ? `${commodityName}${commodityCode ? ` (${commodityCode})` : ""}`
+      : commodityCode || "-";
+    const consignor = movement.consignor || movement.cnsr || movement.company_name || movement.company_code || movement.company || "-";
+    const updatedAt = movement.updated_date || movement.created_date || new Date().toISOString();
+    const formattedUpdatedAt = new Intl.DateTimeFormat("en-IN", {
+      dateStyle: "medium",
+      timeStyle: "short",
+      timeZone: "Asia/Kolkata",
+    }).format(new Date(updatedAt));
+    const rakeCount = group.records.length;
+    const movementSummary = group.movementType === "Outward"
+      ? `${stationDisplay} se ${rakeCount} rake${rakeCount === 1 ? "" : "s"} dispatch hui hai.`
+      : `${stationDisplay} par ${rakeCount} rake${rakeCount === 1 ? "" : "s"} receive hui hai.`;
 
     try {
       await createNotification({
@@ -493,13 +508,13 @@ async function createMovementPreferenceNotifications(records, batchId) {
         station_code: group.stationCode,
         notification_type: type,
         type,
-        title: `New ${group.movementType} FOIS Record`,
-        message: `Station: ${group.stationCode}; Company/Commodity/Rake CMDT: ${details || '-'}; FNR/No.: ${movement.odr_number || movement.indent_no || '-'}; Upload Date: ${movement.created_date || new Date().toISOString()}.`,
+        title: `🚆 ${group.movementType} Alert`,
+        message: `${movementSummary}\n\nCommodity: ${commodityDisplay}\nConsignor: ${consignor}\nUpdated: ${formattedUpdatedAt}`,
         severity: "info",
         related_odr: movement.odr_number || null,
         related_division: movement.division || null,
         batch_id: batchId,
-        data: { movement },
+        data: { movement, station_display: stationDisplay, rake_count: rakeCount, commodity_display: commodityDisplay, consignor, updated_at: updatedAt },
       });
     } catch (error) {
       console.error("[NotificationDelivery] in-app notification failed", {
@@ -2593,12 +2608,12 @@ app.post(
         }
 
         const name = String(body.name || "").trim();
+        let parentCode = body.parent_code ? String(body.parent_code).trim().toUpperCase() : null;
         const generatedDistrictCode = masterKey === "district"
           ? `${parentCode}_${name}`.trim().replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toUpperCase()
           : "";
         const code = String(body.code || generatedDistrictCode).trim().toUpperCase();
         if (!code || !name) throw new Error(masterKey === "district" ? "District name is required" : `${config.label} code and name are required`);
-        let parentCode = body.parent_code ? String(body.parent_code).trim().toUpperCase() : null;
         if (masterKey === "district") {
           parentCode = await requireMasterReference(pool, "state_master", parentCode, "Parent State");
         }
@@ -2619,6 +2634,65 @@ app.post(
       return res.status(201).json(normalizeCatalogRow(config, row));
     } catch (error) {
       return res.status(400).json({ error: error?.message || "Failed to save master" });
+    }
+  }
+);
+
+app.post(
+  "/api/masters/catalog/district/bulk",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (req, res) => {
+    const records = Array.isArray(req.body?.records) ? req.body.records : [];
+    if (records.length === 0 || records.length > 5000) {
+      return res.status(400).json({ error: "Provide between 1 and 5000 district records" });
+    }
+
+    try {
+      const result = await withCatalogPool(async (pool) => {
+        await ensureCatalogTable(pool, MASTER_CATALOGS.district);
+        const normalized = records.map((record, index) => {
+          const parentCode = String(record?.parent_code || "").trim().toUpperCase();
+          const name = String(record?.name || "").trim();
+          if (!parentCode || !name) throw new Error(`Row ${index + 1}: StateCode and DistrictName are required`);
+          const code = `${parentCode}_${name}`
+            .replace(/[^A-Za-z0-9]+/g, "_")
+            .replace(/^_+|_+$/g, "")
+            .toUpperCase();
+          return { id: catalogId("district_master", code), code, name, parentCode };
+        });
+
+        const stateCodes = [...new Set(normalized.map((record) => record.parentCode))];
+        const states = await pool.query(
+          `SELECT code FROM state_master WHERE code = ANY($1::text[])`,
+          [stateCodes]
+        );
+        const existingStates = new Set(states.rows.map((row) => row.code));
+        const missingStates = stateCodes.filter((code) => !existingStates.has(code));
+        if (missingStates.length) throw new Error(`Parent State not found: ${missingStates.join(", ")}`);
+
+        const params = [];
+        const values = normalized.map((record) => {
+          const start = params.length + 1;
+          params.push(record.id, record.code, record.name, record.parentCode);
+          return `($${start}, $${start + 1}, $${start + 2}, $${start + 3}, TRUE, NOW(), NOW())`;
+        });
+        const inserted = await pool.query(
+          `INSERT INTO district_master (id, code, name, parent_code, active, created_at, updated_at)
+           VALUES ${values.join(",")}
+           ON CONFLICT (code) DO UPDATE SET
+             name = EXCLUDED.name,
+             parent_code = EXCLUDED.parent_code,
+             active = TRUE,
+             updated_at = NOW()
+           RETURNING id`,
+          params
+        );
+        return inserted.rowCount;
+      });
+      return res.status(201).json({ imported: result, failed: 0 });
+    } catch (error) {
+      return res.status(400).json({ error: error?.message || "District bulk import failed" });
     }
   }
 );

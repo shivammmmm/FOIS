@@ -8,6 +8,7 @@ import {
   Route,
   Routes,
   useLocation,
+  useParams,
 } from "react-router-dom";
 import PageNotFound from "./lib/PageNotFound";
 import { AuthProvider, useAuth } from "@/lib/AuthContext";
@@ -15,27 +16,72 @@ import UserNotRegisteredError from "@/components/UserNotRegisteredError";
 import Layout from "@/components/Layout";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import RoleProtectedRoute from "@/components/RoleProtectedRoute";
+import AppErrorBoundary from "@/components/AppErrorBoundary";
 
 // Page imports
 // Dashboard removed — no longer used
-import FreightTracker from "@/pages/FreightTracker";
-import MovementDashboard from "@/pages/MovementDashboard.jsx";
-import InwardMonitor from "@/pages/InwardMonitor.jsx";
-import OutwardMonitor from "@/pages/OutwardMonitor.jsx";
-import UploadCenter from "@/pages/UploadCenter";
-import UploadHistory from "@/pages/UploadHistory";
-import Notifications from "@/pages/Notifications";
-import Settings from "@/pages/Settings";
-import Login from "@/pages/Login";
-import Signup from "@/pages/Signup";
-import UserManagement from "@/pages/UserManagement";
-import NotificationPreferences from "@/pages/NotificationPreferences";
-import MasterManagement from "@/pages/MasterManagement.jsx";
+const FreightTracker = React.lazy(() => import("@/pages/FreightTracker"));
+const MovementDashboard = React.lazy(() => import("@/pages/MovementDashboard.jsx"));
+const InwardMonitor = React.lazy(() => import("@/pages/InwardMonitor.jsx"));
+const OutwardMonitor = React.lazy(() => import("@/pages/OutwardMonitor.jsx"));
+const UploadCenter = React.lazy(() => import("@/pages/UploadCenter"));
+const UploadHistory = React.lazy(() => import("@/pages/UploadHistory"));
+const Notifications = React.lazy(() => import("@/pages/Notifications"));
+const Settings = React.lazy(() => import("@/pages/Settings"));
+const Login = React.lazy(() => import("@/pages/Login"));
+const Signup = React.lazy(() => import("@/pages/Signup"));
+const UserManagement = React.lazy(() => import("@/pages/UserManagement"));
+const NotificationPreferences = React.lazy(() => import("@/pages/NotificationPreferences"));
+const MasterManagement = React.lazy(() => import("@/pages/MasterManagement.jsx"));
 
 const ADMIN_ROLES = ["super_admin", "admin"];
 const USER_ROLES = ["user"];
 
 const StationMasterLazy = React.lazy(() => import("@/pages/StationMaster.jsx"));
+
+const AppLoader = () => (
+  <div className="fixed inset-0 flex items-center justify-center bg-background">
+    <div className="flex flex-col items-center gap-3">
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary/20 border-t-primary" />
+      <p className="text-sm text-muted-foreground">Loading RailFlow...</p>
+    </div>
+  </div>
+);
+
+const OPERATION_VIEWS = {
+  "fois-reports": <FreightTracker />,
+  "inward-dashboard": <MovementDashboard direction="Inward" />,
+  "outward-dashboard": <MovementDashboard direction="Outward" />,
+  inward: <InwardMonitor />,
+  outward: <OutwardMonitor />,
+  "inward-monitor": <InwardMonitor />,
+  "outward-monitor": <OutwardMonitor />,
+};
+
+function OperationsKeepAlive() {
+  const { operation } = useParams();
+  const [visited, setVisited] = React.useState(() => new Set([operation]));
+
+  React.useEffect(() => {
+    if (!OPERATION_VIEWS[operation]) return;
+    setVisited((current) => {
+      if (current.has(operation)) return current;
+      const next = new Set(current);
+      next.add(operation);
+      return next;
+    });
+  }, [operation]);
+
+  if (!OPERATION_VIEWS[operation]) return <PageNotFound />;
+
+  return Object.entries(OPERATION_VIEWS).map(([key, view]) =>
+    visited.has(key) ? (
+      <div key={key} className={key === operation ? "block" : "hidden"} aria-hidden={key !== operation}>
+        {view}
+      </div>
+    ) : null
+  );
+}
 
 const RoleHomeRedirect = () => {
   const { user, isAuthenticated } = useAuth();
@@ -51,8 +97,26 @@ const RoleHomeRedirect = () => {
 };
 
 const AuthenticatedApp = () => {
-  const { isLoadingAuth, isLoadingPublicSettings, authError } = useAuth();
+  const { isAuthenticated, isLoadingAuth, isLoadingPublicSettings, authError } = useAuth();
   const location = useLocation();
+
+  React.useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    const preload = () => {
+      void Promise.allSettled([
+        import("@/pages/FreightTracker"),
+        import("@/pages/MovementDashboard.jsx"),
+        import("@/pages/InwardMonitor.jsx"),
+        import("@/pages/OutwardMonitor.jsx"),
+      ]);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      const id = window.requestIdleCallback(preload, { timeout: 1500 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = window.setTimeout(preload, 300);
+    return () => window.clearTimeout(id);
+  }, [isAuthenticated]);
 
   if (location.pathname === "/login" || location.pathname === "/signup") {
     return (
@@ -108,12 +172,8 @@ const AuthenticatedApp = () => {
             <Route path="/admin/upload" element={<UploadCenter />} />
             <Route path="/admin/upload-history" element={<UploadHistory />} />
             <Route path="/admin/dashboard" element={<Navigate to="/admin/inward-dashboard" replace />} />
-            <Route path="/admin/fois-reports" element={<FreightTracker />} />
             <Route path="/admin/freight" element={<Navigate to="/admin/fois-reports" replace />} />
-            <Route path="/admin/inward-dashboard" element={<MovementDashboard direction="Inward" />} />
-            <Route path="/admin/outward-dashboard" element={<MovementDashboard direction="Outward" />} />
-            <Route path="/admin/inward" element={<InwardMonitor />} />
-            <Route path="/admin/outward" element={<OutwardMonitor />} />
+            <Route path="/admin/:operation" element={<OperationsKeepAlive />} />
             <Route path="/admin/notifications" element={<Notifications />} />
 
             <Route
@@ -155,12 +215,8 @@ const AuthenticatedApp = () => {
         >
           <Route element={<Layout />}>
             <Route path="/dashboard" element={<Navigate to="/inward-dashboard" replace />} />
-            <Route path="/inward-dashboard" element={<MovementDashboard direction="Inward" />} />
-            <Route path="/outward-dashboard" element={<MovementDashboard direction="Outward" />} />
-            <Route path="/fois-reports" element={<FreightTracker />} />
             <Route path="/search" element={<Navigate to="/fois-reports" replace />} />
-            <Route path="/inward-monitor" element={<InwardMonitor />} />
-            <Route path="/outward-monitor" element={<OutwardMonitor />} />
+            <Route path="/:operation" element={<OperationsKeepAlive />} />
             <Route
               path="/notification-preferences"
               element={<NotificationPreferences />}
@@ -181,14 +237,18 @@ const AuthenticatedApp = () => {
 
 function App() {
   return (
-    <AuthProvider>
-      <QueryClientProvider client={queryClientInstance}>
-        <Router>
-          <AuthenticatedApp />
-        </Router>
-        <Toaster />
-      </QueryClientProvider>
-    </AuthProvider>
+    <AppErrorBoundary>
+      <AuthProvider>
+        <QueryClientProvider client={queryClientInstance}>
+          <Router>
+            <Suspense fallback={<AppLoader />}>
+              <AuthenticatedApp />
+            </Suspense>
+          </Router>
+          <Toaster />
+        </QueryClientProvider>
+      </AuthProvider>
+    </AppErrorBoundary>
   );
 }
 

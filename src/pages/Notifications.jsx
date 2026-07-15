@@ -15,7 +15,7 @@ import {
   getBusinessRakeCmdtCode as getRakeCmdtCode,
   getBusinessRakeCmdtDisplay as getRakeCmdtDisplay,
 } from "@/utils/freightRecordFilters";
-import { formatStationNameAndCode, getStationMeta } from "@/utils/stationMaster";
+import { formatStationNameAndCode, getStationMeta, registerStationMetaFromRecords } from "@/utils/stationMaster";
 import {
   clearPersistentFilters,
   normalizeMultiValue,
@@ -80,6 +80,7 @@ export default function Notifications() {
       ]);
       setNotifs(notifData || []);
       setMovements(movData || []);
+      registerStationMetaFromRecords(movData || []);
       setSavedFilters((savedRows || []).filter((row) => row.source === SAVED_SOURCE));
     } catch (error) {
       console.error("[Notifications] load failed:", error);
@@ -407,7 +408,7 @@ export default function Notifications() {
                       {notification.severity || "info"}
                     </span>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{notification.message}</p>
+                  <p className="mt-2 whitespace-pre-line text-sm leading-6 text-muted-foreground">{notification.message}</p>
                   <div className="mt-2 flex flex-wrap items-center gap-3">
                     <span className="rounded border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
                       {config.label}

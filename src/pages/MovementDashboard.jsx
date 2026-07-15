@@ -21,7 +21,7 @@ import {
 } from "recharts";
 import { base44 } from "@/api/base44Client";
 import { getCommodityColor } from "@/utils/railwayDictionary";
-import { formatStationNameAndCode } from "@/utils/stationMaster";
+import { formatStationNameAndCode, registerStationMetaFromRecords } from "@/utils/stationMaster";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
 import { getBusinessRakeCmdtCode } from "@/utils/freightRecordFilters";
 
@@ -39,6 +39,7 @@ export default function MovementDashboard({ direction = "Inward" }) {
       setLoading(true);
       try {
         const data = await base44.entities.FreightMovement.list("-created_date", 50000);
+        registerStationMetaFromRecords(data || []);
         setRecords((data || []).filter((record) => record.movement_type === direction));
       } catch (error) {
         console.error(`[${direction}Dashboard] load failed:`, error);
@@ -76,7 +77,7 @@ export default function MovementDashboard({ direction = "Inward" }) {
       ];
 
   return (
-    <div className="p-4 lg:p-6 space-y-6 animate-fade-in">
+    <div className="p-4 lg:p-6 space-y-6">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
