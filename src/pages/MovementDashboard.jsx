@@ -59,7 +59,17 @@ export default function MovementDashboard({ direction = "Inward" }) {
 
   const sourceOptions = summary?.options || { zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] };
   const scoped = buildFilterHierarchyOptions(hierarchy || {}, { state: filters.state, district: filters.district, commodity: filters.commodity });
-  const options = { ...sourceOptions, state: scoped.states, district: scoped.districts, station: scoped.stations, commodity: scoped.commodities, rake: scoped.rakeCmdts };
+  const preferHierarchy = (hierarchyOptions, fallbackOptions) =>
+    hierarchyOptions?.length ? hierarchyOptions : (fallbackOptions || []);
+  const options = {
+    ...sourceOptions,
+    state: preferHierarchy(scoped.states, sourceOptions.state),
+    district: preferHierarchy(scoped.districts, sourceOptions.district),
+    station: preferHierarchy(scoped.stations, sourceOptions.station),
+    commodity: preferHierarchy(scoped.commodities, sourceOptions.commodity),
+    rake: preferHierarchy(scoped.rakeCmdts, sourceOptions.rake),
+  };
+  const unmappedCommodities = (hierarchy?.commodities || []).filter((item) => item.mapped === false);
   const stats = summary || { pending: "—", arrived: "—", departed: "—", delayed: "—", commodityData: [], divisionData: [], stationData: [], trendData: [] };
 
   const cards = isInward
@@ -91,13 +101,24 @@ export default function MovementDashboard({ direction = "Inward" }) {
       </div>
 
       <div className="flex flex-wrap gap-2 rounded-xl border border-border bg-card p-3">
-        {[["zone","Zone"],["division","Division"],["state","State"],["district","District"],["station","Station"],["commodity","Commodity"],["rake","Rake CMDT"],["company","Company"]].map(([key, label]) => options[key].length > 0 && <MultiSelectFilter key={key} label={label} selected={filters[key]} options={options[key]} placeholder={`All ${label}`} onChange={(value) => setFilters((prev) => key === 'state' ? { ...prev, state: value, district: [], station: [] } : key === 'district' ? { ...prev, district: value, station: [] } : key === 'commodity' ? { ...prev, commodity: value, rake: [] } : { ...prev, [key]: value })} />)}
+        {[["zone","Zone"],["division","Division"],["state","State"],["district","District"],["station","Station"],["commodity","Commodity"],["rake","Rake CMDT"],["company","Company"]].map(([key, label]) => {
+          const isCoreHierarchyFilter = ["state", "district", "station", "commodity", "rake"].includes(key);
+          if (!isCoreHierarchyFilter && !options[key]?.length) return null;
+          return <MultiSelectFilter key={key} label={label} selected={filters[key]} options={options[key] || []} disabled={(key === "district" && !filters.state.length) || (key === "station" && !filters.district.length) || (key === "rake" && !filters.commodity.length)} placeholder={key === "district" && !filters.state.length ? "Select State first" : key === "station" && !filters.district.length ? "Select District first" : key === "rake" && !filters.commodity.length ? "Select Commodity first" : `All ${label}`} onChange={(value) => setFilters((prev) => key === 'state' ? { ...prev, state: value, district: [], station: [] } : key === 'district' ? { ...prev, district: value, station: [] } : key === 'commodity' ? { ...prev, commodity: value, rake: [] } : { ...prev, [key]: value })} />;
+        })}
         <button type="button" onClick={() => setFilters({ zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] })} className="rounded-lg border border-border px-3 py-2 text-xs">Clear Filters</button>
       </div>
 
       {loadError && (
         <div className="rounded-xl border border-red-500/30 bg-red-500/5 px-4 py-3 text-sm text-red-600">
           Dashboard API unavailable: {loadError}. Backend ko updated build ke saath restart/deploy karein.
+        </div>
+      )}
+
+      {unmappedCommodities.length > 0 && (
+        <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-700">
+          <span className="font-semibold">Commodity Master missing:</span>{" "}
+          {unmappedCommodities.map((item) => item.code).join(", ")}. Raw freight codes filters mein available rahenge.
         </div>
       )}
 

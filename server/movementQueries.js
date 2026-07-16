@@ -181,7 +181,7 @@ export async function pagedFoisReports(input = {}) {
 }
 
 export async function filterHierarchy() {
-  return cachedJson("movement:filter-hierarchy:v1", 300, async () => {
+  return cachedJson("movement:filter-hierarchy:v2", 300, async () => {
     const [states, districts, stations, pairs, masters] = await Promise.all([
       pool.query("SELECT code, name FROM state_master WHERE active IS DISTINCT FROM FALSE ORDER BY name, code"),
       pool.query("SELECT code, name, parent_code FROM district_master WHERE active IS DISTINCT FROM FALSE ORDER BY name, code"),
@@ -203,8 +203,8 @@ export async function filterHierarchy() {
       states: states.rows,
       districts: districts.rows.map((row) => ({ code: row.code, name: row.name, parentCode: row.parent_code })),
       stations: stations.rows,
-      commodities: commodityCodes.map((code) => ({ code, name: labels.get(`Commodity:${code}`) || code })),
-      rakes: [...rakeMap].map(([code, commodities]) => ({ code, name: labels.get(`Rake CMDT:${code}`) || code, commodities: [...commodities] })),
+      commodities: commodityCodes.map((code) => ({ code, name: labels.get(`Commodity:${code}`) || code, mapped: labels.has(`Commodity:${code}`) })),
+      rakes: [...rakeMap].map(([code, commodities]) => ({ code, name: labels.get(`Rake CMDT:${code}`) || code, mapped: labels.has(`Rake CMDT:${code}`), commodities: [...commodities] })),
     };
   });
 }
