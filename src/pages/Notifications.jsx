@@ -71,13 +71,13 @@ export default function Notifications() {
   async function loadData() {
     setLoading(true);
     try {
-      const [notifData, movData, savedRows] = await Promise.all([
+      const [notifData, savedRows] = await Promise.all([
         base44.notifications.list(),
-        base44.entities.FreightMovement.list("-created_date", 50000),
         user?.id
           ? base44.entities.SavedFilter.filter({ user_id: user.id }, "-created_at", 100)
           : Promise.resolve([]),
       ]);
+      const movData = (notifData || []).map((row) => row.movement).filter(Boolean);
       setNotifs(notifData || []);
       setMovements(movData || []);
       registerStationMetaFromRecords(movData || []);

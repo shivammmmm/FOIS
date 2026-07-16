@@ -20,12 +20,15 @@ import {
   listUploadHistory,
   listUsers,
   listRecords,
+  markAllNotificationsRead,
   updateUserRole,
   updateUserPassword,
   updateRecord,
 } from "./storage.js";
 
 import { createNotification } from "./notifications/service.js";
+import { movementDashboardSummary, pagedFoisReports, pagedMovements } from "./movementQueries.js";
+import { invalidateCachePrefix } from "./cache.js";
 
 import {
   createOrUpdateStation,
@@ -1074,7 +1077,9 @@ app.delete(
   requireRoles(ADMIN_ROLES),
   async (req, res, next) => {
     try {
-      res.json(await deleteUploadBatch(req.params.id));
+      const result = await deleteUploadBatch(req.params.id);
+      await invalidateCachePrefix("movement:");
+      res.json(result);
     } catch (error) {
       next(error);
     }
@@ -1279,6 +1284,7 @@ app.post(
         ).length;
 
         await createRecords("FreightMovement", parsedRecords);
+        await invalidateCachePrefix("movement:");
         insertedRecords = parsedRecords.length;
         await createMovementPreferenceNotifications(parsedRecords, batchId).catch((error) => {
           console.error("[NotificationDelivery] movement preference notifications failed", {
@@ -1678,13 +1684,7 @@ app.post("/api/notifications/mark-all-read", requireAuth, async (req, res, next)
   try {
     const userId = String(req.auth?.id || req.auth?.sub || "");
     if (!userId) return res.status(401).json({ error: "Unauthorized" });
-    const rows = await listRecords("RailNotification", { sort: "-created_date", limit: 10000 });
-    const allowed = rows.filter((item) => ["inward", "outward"].includes(String(item.type || "").toLowerCase()));
-    let updated = 0;
-    for (const item of allowed) {
-      const readBy = [...new Set([...(Array.isArray(item.read_by) ? item.read_by : []), userId])];
-      if (readBy.length !== (item.read_by || []).length) { await updateRecord("RailNotification", item.id, { read_by: readBy }); updated += 1; }
-    }
+    const updated = await markAllNotificationsRead(userId);
     res.json({ success: true, updated });
   } catch (error) { next(error); }
 });
@@ -1698,6 +1698,44 @@ app.post("/api/notifications/:id/read", requireAuth, async (req, res, next) => {
     const readBy = [...new Set([...(Array.isArray(item.read_by) ? item.read_by : []), userId])];
     await updateRecord("RailNotification", item.id, { read_by: readBy });
     res.json({ success: true });
+  } catch (error) { next(error); }
+});
+
+function movementQueryFromRequest(req) {
+  const multi = (name) => req.query[name]
+    ? String(req.query[name]).split(",").map((value) => value.trim()).filter(Boolean)
+    : [];
+  return {
+    direction: req.query.direction,
+    zone: multi("zone"), division: multi("division"), state: multi("state"),
+    district: multi("district"), station: multi("station"), commodity: multi("commodity"),
+    rake: multi("rake"), company: multi("company"), search: req.query.search,
+    page: req.query.page, limit: req.query.limit,
+  };
+}
+
+app.get("/api/movements/dashboard-summary", requireAuth, async (req, res, next) => {
+  try {
+    res.set("Cache-Control", "private, max-age=30");
+    res.json(await movementDashboardSummary(movementQueryFromRequest(req)));
+  } catch (error) { next(error); }
+});
+
+app.get("/api/movements", requireAuth, async (req, res, next) => {
+  try { res.json(await pagedMovements(movementQueryFromRequest(req))); }
+  catch (error) { next(error); }
+});
+
+app.get("/api/fois-reports", requireAuth, async (req, res, next) => {
+  try {
+    res.json(await pagedFoisReports({
+      page: req.query.page, limit: req.query.limit, search: req.query.search,
+      division: req.query.division ? String(req.query.division).split(",") : [],
+      stationFrom: req.query.stationFrom ? String(req.query.stationFrom).split(",") : [],
+      commodity: req.query.commodity ? String(req.query.commodity).split(",") : [],
+      destination: req.query.destination ? String(req.query.destination).split(",") : [],
+      unmappedOnly: req.query.unmappedOnly === "true",
+    }));
   } catch (error) { next(error); }
 });
 
@@ -1871,6 +1909,7 @@ app.post(
         req.params.entityName,
         req.body?.records
       );
+      if (req.params.entityName === "FreightMovement") await invalidateCachePrefix("movement:");
       res.status(201).json(created);
     } catch (error) {
       next(error);

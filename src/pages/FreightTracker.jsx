@@ -11,7 +11,6 @@ import {
   clearPersistentFilters,
   hasSavedFilterValues,
   normalizeMultiValue,
-  optionMatches,
   readPersistentFilters,
   writePersistentFilters,
 } from "@/utils/persistentFilters";
@@ -55,68 +54,58 @@ export default function FreightTracker() {
 
   const cachedForUser = reportSessionCache?.userId === user?.id ? reportSessionCache : null;
   const [records, setRecords] = useState(cachedForUser?.records || []);
-  const [uploadDates, setUploadDates] = useState(cachedForUser?.uploadDates || new Map());
-  const [uploadDateError, setUploadDateError] = useState(cachedForUser?.uploadDateError || "");
+  const [uploadDates] = useState(new Map());
+  const [uploadDateError, setUploadDateError] = useState("");
   const [savedFilters, setSavedFilters] = useState(cachedForUser?.savedFilters || []);
   const [loading, setLoading] = useState(!cachedForUser);
-  const [filters, setFilters] = useState({ ...DEFAULT_FILTERS, search: initialSearch });
+  const [filters, setFilters] = useState(cachedForUser?.filters || { ...DEFAULT_FILTERS, search: initialSearch });
   const [selectedRecord, setSelectedRecord] = useState(null);
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(cachedForUser?.page || 1);
+  const [totalRecords, setTotalRecords] = useState(cachedForUser?.totalRecords || 0);
+  const [totalPages, setTotalPages] = useState(cachedForUser?.totalPages || 1);
+  const [filterOptions, setFilterOptions] = useState(cachedForUser?.filterOptions || { divisions: [], stationsFrom: [], commodities: [], destinations: [] });
+  const [debouncedSearch, setDebouncedSearch] = useState(filters.search);
   const [exporting, setExporting] = useState(false);
   const [showUnmappedOnly, setShowUnmappedOnly] = useState(false);
 
   useEffect(() => {
-    if (reportSessionCache?.userId === user?.id) {
-      setRecords(reportSessionCache.records);
-      setUploadDates(reportSessionCache.uploadDates);
-      setUploadDateError(reportSessionCache.uploadDateError);
-      setSavedFilters(reportSessionCache.savedFilters);
+    const id = window.setTimeout(() => setDebouncedSearch(filters.search), 350);
+    return () => window.clearTimeout(id);
+  }, [filters.search]);
+
+  useEffect(() => {
+    const query = { page, limit: PER_PAGE, search: debouncedSearch, division: filters.divisions, stationFrom: filters.stationsFrom, commodity: filters.commodities, destination: filters.destinations, unmappedOnly: showUnmappedOnly };
+    const queryKey = JSON.stringify(query);
+    if (reportSessionCache?.userId === user?.id && reportSessionCache.queryKey === queryKey) {
       setLoading(false);
       return;
     }
+    let current = true;
+    setLoading(true);
+    base44.foisReports.page(query).then((data) => {
+      if (!current) return;
+      const nextRecords = extractItems(data);
+      registerStationMetaFromRecords(nextRecords);
+      const options = data.options || {};
+      const nextOptions = { divisions: options.division || [], stationsFrom: options.stationFrom || [], commodities: options.commodity || [], destinations: options.destination || [] };
+      setRecords(nextRecords);
+      setTotalRecords(data.total || 0);
+      setTotalPages(data.totalPages || 1);
+      setFilterOptions(nextOptions);
+      setUploadDateError("");
+      reportSessionCache = { userId: user?.id, queryKey, records: nextRecords, totalRecords: data.total || 0, totalPages: data.totalPages || 1, filterOptions: nextOptions, filters, page, savedFilters };
+    }).catch((error) => {
+      if (current) setUploadDateError(error?.message || "FOIS Reports could not be loaded");
+    }).finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [debouncedSearch, filters.divisions, filters.stationsFrom, filters.commodities, filters.destinations, page, savedFilters, showUnmappedOnly, user?.id]);
 
-    const load = async () => {
-      setLoading(true);
-      try {
-        const [data, uploadResult] = await Promise.all([
-          base44.entities.FreightMovement.list("-created_date", 50000),
-          base44.entities.UploadLog.list("-created_date", 10000)
-            .then((uploads) => ({ uploads, error: "" }))
-            .catch((error) => ({ uploads: [], error: error?.message || "Upload metadata could not be loaded" })),
-        ]);
-        const nextRecords = extractItems(data);
-        registerStationMetaFromRecords(nextRecords);
-        const nextUploadDates = buildUploadDateMap(extractItems(uploadResult.uploads));
-        let nextSavedFilters = [];
-        setRecords(nextRecords);
-        setUploadDateError(uploadResult.error);
-        setUploadDates(nextUploadDates);
-        if (user?.id) {
-          const rows = await base44.entities.SavedFilter.filter(
-            { user_id: user.id },
-            "-created_at",
-            100
-          );
-          nextSavedFilters = (rows || []).filter((row) =>
-              ["FOIS Reports", "Freight Tracker", "Reports"].includes(row.source)
-            );
-          setSavedFilters(nextSavedFilters);
-        }
-        reportSessionCache = {
-          userId: user?.id,
-          records: nextRecords,
-          uploadDates: nextUploadDates,
-          uploadDateError: uploadResult.error,
-          savedFilters: nextSavedFilters,
-        };
-      } catch (error) {
-        console.error("[FOIS Reports] load failed:", error);
-      } finally {
-        setLoading(false);
-      }
-    };
-    load();
-  }, [user?.id]);
+  useEffect(() => {
+    if (!user?.id || savedFilters.length) return;
+    base44.entities.SavedFilter.filter({ user_id: user.id }, "-created_at", 100)
+      .then((rows) => setSavedFilters((rows || []).filter((row) => ["FOIS Reports", "Freight Tracker", "Reports"].includes(row.source))))
+      .catch((error) => console.error("[FOIS Reports] saved filters failed:", error));
+  }, [savedFilters.length, user?.id]);
 
   useEffect(() => {
     if (didLoadPersisted.current || !user?.id) return;
@@ -136,27 +125,6 @@ export default function FreightTracker() {
     [records, uploadDates]
   );
 
-  const filterOptions = useMemo(() => {
-    const divisions = new Set();
-    const stationsFrom = new Set();
-    const commodities = new Set();
-    const destinations = new Set();
-
-    sheetRows.forEach(({ row }) => {
-      if (row.DVSN) divisions.add(row.DVSN);
-      if (row["STTN FROM"]) stationsFrom.add(row["STTN FROM"]);
-      if (row.CMDT) commodities.add(row.CMDT);
-      if (row.DSTN) destinations.add(row.DSTN);
-    });
-
-    return {
-      divisions: toSortedOptions(divisions),
-      stationsFrom: toSortedOptions(stationsFrom),
-      commodities: toSortedOptions(commodities),
-      destinations: toSortedOptions(destinations),
-    };
-  }, [sheetRows]);
-
   const unmappedStations = useMemo(() => {
     const stations = new Map();
     for (const record of records) {
@@ -165,34 +133,8 @@ export default function FreightTracker() {
     }
     return [...stations.values()].sort((a, b) => a.code.localeCompare(b.code));
   }, [records]);
-  const unmappedCodes = useMemo(
-    () => new Set(unmappedStations.map((station) => station.code)),
-    [unmappedStations]
-  );
-
-  const filteredRows = useMemo(() => {
-    const q = filters.search.trim().toLowerCase();
-
-    return sheetRows.filter(({ record, row }) => {
-      const matchesSearch =
-        !q ||
-        SHEET_COLUMNS.some((column) =>
-          String(row[column] || "").toLowerCase().includes(q)
-        );
-
-      return (
-        (!showUnmappedOnly || unmappedCodes.has(String(record.station_from || "").trim().toUpperCase()) || unmappedCodes.has(String(record.station_to || "").trim().toUpperCase())) &&
-        matchesSearch &&
-        optionMatches(filters.divisions, row.DVSN) &&
-        optionMatches(filters.stationsFrom, row["STTN FROM"]) &&
-        optionMatches(filters.commodities, row.CMDT) &&
-        optionMatches(filters.destinations, row.DSTN)
-      );
-    });
-  }, [filters, sheetRows, showUnmappedOnly, unmappedCodes]);
-
-  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PER_PAGE));
-  const visibleRows = filteredRows.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+  const filteredRows = sheetRows;
+  const visibleRows = sheetRows;
   const hasActiveFilters = hasSavedFilterValues(filters);
 
   function resetPage() {
@@ -245,7 +187,7 @@ export default function FreightTracker() {
     setExporting(true);
     try {
       const XLSX = await import("xlsx");
-      const exportRows = filteredRows.map(({ row }) => row);
+      const exportRows = visibleRows.map(({ row }) => row);
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(
         workbook,
@@ -268,7 +210,7 @@ export default function FreightTracker() {
           <div>
             <h1 className="text-xl font-bold text-foreground">FOIS Reports</h1>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              {records.length} uploaded FOIS sheet record(s)
+              {totalRecords} uploaded FOIS sheet record(s)
             </p>
           </div>
         </div>
@@ -285,11 +227,11 @@ export default function FreightTracker() {
           <button
             type="button"
             onClick={exportExcel}
-            disabled={exporting || filteredRows.length === 0}
+            disabled={exporting || visibleRows.length === 0}
             className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             <Download className="h-3.5 w-3.5" />
-            {exporting ? "Exporting" : "Excel Export"}
+            {exporting ? "Exporting" : "Export Current Page"}
           </button>
         </div>
       </div>
@@ -364,9 +306,8 @@ export default function FreightTracker() {
       <div className="text-xs text-muted-foreground">
         Showing{" "}
         <span className="font-medium text-foreground">{visibleRows.length}</span>{" "}
-        of <span className="font-medium text-foreground">{filteredRows.length}</span>{" "}
+        of <span className="font-medium text-foreground">{totalRecords}</span>{" "}
         records
-        {filteredRows.length !== records.length && ` (filtered from ${records.length})`}
       </div>
       {unmappedStations.length > 0 && (
         <section className="rounded-lg border border-amber-400/40 bg-amber-50 p-3 text-amber-950">
@@ -395,7 +336,7 @@ export default function FreightTracker() {
           </div>
         </section>
       )}
-      {uploadDateError && <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700">Upload Date unavailable: {uploadDateError}</div>}
+      {uploadDateError && <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700">FOIS Reports unavailable: {uploadDateError}</div>}
 
       <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
         <div className="overflow-x-auto">
@@ -403,7 +344,7 @@ export default function FreightTracker() {
             <LoadingTable />
           ) : filteredRows.length === 0 ? (
             <div className="px-4 py-12 text-center text-sm text-muted-foreground">
-              {records.length === 0
+              {totalRecords === 0
                 ? "No data yet. Upload a FOIS file to get started."
                 : "No records match your filters."}
             </div>
@@ -445,7 +386,7 @@ export default function FreightTracker() {
         {filteredRows.length > 0 && totalPages > 1 && (
           <div className="flex items-center justify-between border-t border-border bg-muted/30 px-4 py-3">
             <span className="text-xs text-muted-foreground">
-              Page {page} of {totalPages} - {filteredRows.length} records
+              Page {page} of {totalPages} - {totalRecords} records
             </span>
             <div className="flex gap-2">
               <PageButton onClick={() => setPage(1)} disabled={page === 1}>
@@ -527,7 +468,7 @@ function buildSheetRow(record, uploadDates) {
     CNSG: readValue(record, "CNSG", "cnsg"),
     CMDT: readValue(record, "CMDT", "Commodity", "commodity_code", "commodity"),
     "RAKE CMDT": readValue(record, "RAKE CMDT", "Rake CMDT", "rake_commodity_code", "rake_cmdt"),
-    "Upload Date": formatUploadDate(uploadDates.get(uploadKey)),
+    "Upload Date": formatUploadDate(record.upload_date || uploadDates.get(uploadKey)),
     DSTN: readValue(record, "DSTN", "station_to"),
     "INDENTED UNTS": readValue(record, "INDENTED UNTS", "indented_units"),
     "SUPPLIED UNTS": readValue(record, "SUPPLIED UNTS", "supplied_units", "wagons"),

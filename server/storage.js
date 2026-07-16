@@ -377,6 +377,26 @@ async function createEntityTable(tableName) {
     await pool.query(
       `CREATE INDEX IF NOT EXISTS ${tableName}_movement_type_created_date_idx ON ${tableName} ((data->>'movement_type'), created_date DESC)`
     );
+    for (const [name, expression] of [
+      ["division", "(data->>'division')"],
+      ["status", "(data->>'status')"],
+      ["station_from", "station_from"],
+      ["station_to", "station_to"],
+      ["from_state", "from_state"],
+      ["to_state", "to_state"],
+      ["from_district", "from_district"],
+      ["to_district", "to_district"],
+    ]) {
+      await pool.query(`CREATE INDEX IF NOT EXISTS ${tableName}_${name}_query_idx ON ${tableName} (${expression})`);
+    }
+    if (tableName === "freight_movements") {
+      for (const [name, expression] of [
+        ["station_from_trgm", "station_from"], ["station_to_trgm", "station_to"],
+        ["odr_number_trgm", "(data->>'odr_number')"], ["company_trgm", "(data->>'company')"],
+      ]) {
+        await pool.query(`CREATE INDEX IF NOT EXISTS ${tableName}_${name}_idx ON ${tableName} USING GIN (${expression} gin_trgm_ops)`);
+      }
+    }
 
     // Date indexes (business-date fields)
     for (const dateCol of [
@@ -518,6 +538,9 @@ async function createEntityTable(tableName) {
     await pool.query(
       "CREATE INDEX IF NOT EXISTS rail_notifications_batch_id_idx ON rail_notifications ((data->>'batch_id'))"
     );
+    await pool.query(
+      "CREATE INDEX IF NOT EXISTS rail_notifications_type_created_idx ON rail_notifications ((LOWER(data->>'type')), created_date DESC)"
+    );
   }
 }
 
@@ -534,6 +557,7 @@ export async function initializeStorage() {
   }
 
   try {
+    await pool.query("CREATE EXTENSION IF NOT EXISTS pg_trgm");
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
@@ -1283,4 +1307,31 @@ export async function countTables() {
     counts[tableName] = result.rows[0].count;
   }
   return counts;
+}
+
+export async function markAllNotificationsRead(userId) {
+  const normalizedUserId = String(userId || "");
+  if (!normalizedUserId) return 0;
+  if (activeStorage !== "postgres") {
+    const db = await readDb();
+    let updated = 0;
+    db.RailNotification = (db.RailNotification || []).map((item) => {
+      if (!["inward", "outward"].includes(String(item.type || "").toLowerCase())) return item;
+      const readBy = Array.isArray(item.read_by) ? item.read_by : [];
+      if (readBy.includes(normalizedUserId)) return item;
+      updated += 1;
+      return { ...item, read_by: [...readBy, normalizedUserId] };
+    });
+    await writeDb(db);
+    return updated;
+  }
+  const result = await pool.query(
+    `UPDATE rail_notifications
+     SET data = jsonb_set(data, '{read_by}', COALESCE(data->'read_by', '[]'::jsonb) || to_jsonb(ARRAY[$1]::text[]), true),
+         updated_date = NOW()
+     WHERE LOWER(data->>'type') IN ('inward', 'outward')
+       AND NOT COALESCE(data->'read_by', '[]'::jsonb) @> to_jsonb(ARRAY[$1]::text[])`,
+    [normalizedUserId]
+  );
+  return result.rowCount;
 }

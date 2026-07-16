@@ -4,9 +4,6 @@ import { base44 } from "@/api/base44Client";
 import { apiClient } from "@/api/apiClient";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
 import { useAuth } from "@/lib/AuthContext";
-import {
-  getBusinessRakeCmdtCode as getRakeCmdtCode,
-} from "@/utils/freightRecordFilters";
 import { getDivisionName } from "@/utils/railwayDictionary";
 import { getStationMeta } from "@/utils/stationMaster";
 
@@ -41,7 +38,6 @@ export default function NotificationPreferences() {
   const [recordId, setRecordId] = useState(null);
   const [prefs, setPrefs] = useState(DEFAULTS);
   const [saving, setSaving] = useState(false);
-  const [movements, setMovements] = useState([]);
   const [stationsPool, setStationsPool] = useState([]);
   const [statesPool, setStatesPool] = useState([]);
   const [districtsPool, setDistrictsPool] = useState([]);
@@ -59,8 +55,7 @@ export default function NotificationPreferences() {
       try {
         const requests = [
           base44.entities.UserNotificationPreference.filter({ user_id: user.id }),
-          base44.entities.FreightMovement.list("-created_date", 50000),
-          apiClient.stationMaster.list({ limit: 50000 }),
+          apiClient.stationMaster.list({ limit: 10000 }),
           apiClient.readOnlyMasters.states(),
           apiClient.readOnlyMasters.districts(),
           apiClient.masterCatalog.list("division", { limit: 500 }),
@@ -70,16 +65,14 @@ export default function NotificationPreferences() {
         const results = await Promise.allSettled(requests);
         const value = (index, fallback) => results[index].status === "fulfilled" ? results[index].value : fallback;
         const errors = [];
-        if (results[3].status === "rejected") errors.push("State load failed");
-        if (results[4].status === "rejected") errors.push("District load failed");
-        if (results[1].status === "rejected") errors.push("Freight option load failed");
-        if (results[2].status === "rejected") errors.push("Station load failed");
+        if (results[2].status === "rejected") errors.push("State load failed");
+        if (results[3].status === "rejected") errors.push("District load failed");
+        if (results[1].status === "rejected") errors.push("Station load failed");
         setLoadErrors(errors);
         const rows = value(0, []);
-        const movData = value(1, []);
-        const stationData = value(2, { items: [] });
-        const stateData = value(3, []);
-        const districtData = value(4, []);
+        const stationData = value(1, { items: [] });
+        const stateData = value(2, []);
+        const districtData = value(3, []);
 
         const existing = rows?.[0];
         if (existing) {
@@ -88,13 +81,12 @@ export default function NotificationPreferences() {
           setLastUpdated(existing.updated_date || existing.updated_at || existing.created_date);
         }
 
-        setMovements(extractItems(movData));
         setStationsPool(extractItems(stationData));
         setStatesPool(extractItems(stateData));
         setDistrictsPool(extractItems(districtData));
-        setDivisionMasters(extractItems(value(5, [])));
-        setCommodityMasters(extractItems(value(6, [])));
-        setRakeCmdtMasters(extractItems(value(7, [])));
+        setDivisionMasters(extractItems(value(4, [])));
+        setCommodityMasters(extractItems(value(5, [])));
+        setRakeCmdtMasters(extractItems(value(6, [])));
       } catch (error) {
         console.error("[NotificationPreferences] load failed:", error);
       } finally {
@@ -135,37 +127,23 @@ export default function NotificationPreferences() {
     const commodityLabels = masterLabelMap(commodityMasters);
     const rakeLabels = masterLabelMap(rakeCmdtMasters);
 
-    const commodityScoped =
-      prefs.commodities.length === 0
-        ? movements
-        : movements.filter((movement) => prefs.commodities.includes(getCommodityCode(movement)));
-
-    movements.forEach((movement) => {
-      const division = getDivisionCode(movement);
-      if (division) divisions.set(division, formatMasterLabel(division, divisionLabels.get(division) || getDivisionName(division)));
-      for (const station of getMovementStations(movement)) {
-        const code = station.code;
-        const masterMeta = getStationPreferenceMeta(code, stationMetaByCode);
-        const meta = {
-          ...masterMeta,
-          state: resolveMasterCode(station.state || masterMeta.state, statesPool),
-          district: resolveDistrictCode(station.district || masterMeta.district, resolveMasterCode(station.state || masterMeta.state, statesPool), districtsPool),
-          zone: station.zone || masterMeta.zone,
-        };
-        if (prefs.states.length && !prefs.states.includes(meta.state)) continue;
-        if (prefs.districts.length && !prefs.districts.includes(meta.district)) continue;
-        stations.set(code, meta.name && meta.name !== code ? `${meta.name} (${code})` : code);
-        if (meta.zone) zones.add(meta.zone);
-      }
-
-      const commodity = getCommodityCode(movement);
-      if (commodity) commodities.set(commodity, formatMasterLabel(commodity, commodityLabels.get(commodity)));
-
+    divisionMasters.forEach((row) => {
+      const code = String(row.code || row.division_code || "").trim();
+      if (code) divisions.set(code, formatMasterLabel(code, divisionLabels.get(code) || getDivisionName(code)));
     });
-
-    commodityScoped.forEach((movement) => {
-      const rakeCmdt = getRakeCmdtCode(movement);
-      if (rakeCmdt) rakeCmdts.set(rakeCmdt, formatMasterLabel(rakeCmdt, rakeLabels.get(rakeCmdt)));
+    commodityMasters.forEach((row) => {
+      const code = String(row.code || row.commodity_code || "").trim();
+      if (code) commodities.set(code, formatMasterLabel(code, commodityLabels.get(code)));
+    });
+    rakeCmdtMasters.forEach((row) => {
+      const code = String(row.code || row.rake_commodity_code || "").trim();
+      if (code) rakeCmdts.set(code, formatMasterLabel(code, rakeLabels.get(code)));
+    });
+    stationMetaByCode.forEach((meta, code) => {
+      if (prefs.states.length && !prefs.states.includes(meta.state)) return;
+      if (prefs.districts.length && !prefs.districts.includes(meta.district)) return;
+      stations.set(code, meta.name && meta.name !== code ? `${meta.name} (${code})` : code);
+      if (meta.zone) zones.add(meta.zone);
     });
 
     return {
@@ -177,7 +155,7 @@ export default function NotificationPreferences() {
       commodities: mapOptions(commodities),
       rakeCmdts: mapOptions(rakeCmdts),
     };
-  }, [commodityMasters, districtsPool, divisionMasters, movements, prefs.commodities, prefs.districts, prefs.states, rakeCmdtMasters, statesPool, stationMetaByCode, stationsPool]);
+  }, [commodityMasters, districtsPool, divisionMasters, prefs.districts, prefs.states, rakeCmdtMasters, statesPool, stationMetaByCode]);
 
   async function save() {
     if (!user?.id) return;

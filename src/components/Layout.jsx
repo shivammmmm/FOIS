@@ -150,14 +150,9 @@ export default function Layout() {
                   <button
                     type="button"
                     onClick={() => {
-                      if (active) {
-                        setMasterMenuOpen(true);
-                        return;
-                      }
-
                       const nextOpen = !masterMenuOpen;
                       setMasterMenuOpen(nextOpen);
-                      if (nextOpen) navigate(children[0].path);
+                      if (nextOpen && !active) navigate(children[0].path);
                     }}
                     className={cn(
                       "flex w-[calc(100%-1rem)] items-center gap-3 mx-2 px-3 py-3 rounded-lg transition-all duration-200",

@@ -341,6 +341,36 @@ export const apiClient = {
     storageCounts: () => request("/api/admin/storage/counts"),
   },
 
+  movements: {
+    dashboardSummary: (filters = {}) => {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) {
+        if (Array.isArray(value) && value.length) params.set(key, value.join(","));
+        else if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+      }
+      return request(`/api/movements/dashboard-summary?${params}`);
+    },
+    page: (filters = {}) => {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) {
+        if (Array.isArray(value) && value.length) params.set(key, value.join(","));
+        else if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+      }
+      return request(`/api/movements?${params}`);
+    },
+  },
+
+  foisReports: {
+    page: (filters = {}) => {
+      const params = new URLSearchParams();
+      for (const [key, value] of Object.entries(filters)) {
+        if (Array.isArray(value) && value.length) params.set(key, value.join(","));
+        else if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+      }
+      return request(`/api/fois-reports?${params}`);
+    },
+  },
+
   entities: {
     FreightMovement: createEntityApi("FreightMovement"),
     MaturedIndent: createEntityApi("MaturedIndent"),

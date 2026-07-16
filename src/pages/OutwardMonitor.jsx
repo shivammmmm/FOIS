@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowUpFromLine, Save, Search } from "lucide-react";
 import { base44 } from "@/api/base44Client";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
@@ -6,7 +6,6 @@ import FreightDetailsModal from "@/components/FreightDetailsModal";
 import { useAuth } from "@/lib/AuthContext";
 import { getDivisionName } from "@/utils/railwayDictionary";
 import {
-  getBusinessRakeCmdtCode as getRakeCmdtCode,
   getBusinessRakeCmdtDisplay as getRakeCmdtDisplay,
 } from "@/utils/freightRecordFilters";
 import { formatStationNameAndCode, getStationMeta, registerStationMetaFromRecords } from "@/utils/stationMaster";
@@ -15,7 +14,6 @@ import {
   clearPersistentFilters,
   hasSavedFilterValues,
   normalizeMultiValue,
-  optionMatches,
   readPersistentFilters,
   writePersistentFilters,
 } from "@/utils/persistentFilters";
@@ -43,23 +41,19 @@ export default function OutwardMonitor() {
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [selectedRecord, setSelectedRecord] = useState(null);
   const [page, setPage] = useState(1);
+  const [totalRecords, setTotalRecords] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [options, setOptions] = useState({ divisions: ["All"], states: [], districts: [], stations: [], commodities: [], rakeCmdts: [] });
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
       try {
-        const data = await base44.entities.FreightMovement.list("-created_date", 50000);
-        registerStationMetaFromRecords(data || []);
-        const outwardOnly = (data || []).filter((record) => record.movement_type === "Outward");
-        setAllRecords(outwardOnly);
-        if (user?.id) {
-          const rows = await base44.entities.SavedFilter.filter(
-            { user_id: user.id },
-            "-created_at",
-            100
-          );
-          setSavedFilters((rows || []).filter((row) => row.source === SAVED_SOURCE));
-        }
+        const data = await base44.movements.page({ direction: "Outward", page, limit: PER_PAGE, search: filters.search, division: filters.division === "All" ? [] : [filters.division], state: filters.states, district: filters.districts, station: filters.stations, commodity: filters.commodities, rake: filters.rakeCmdts });
+        registerStationMetaFromRecords(data.items || []);
+        setAllRecords(data.items || []);
+        setTotalRecords(data.total || 0);
+        setTotalPages(data.totalPages || 1);
       } catch (error) {
         console.error("[OutwardMonitor] load failed:", error);
       } finally {
@@ -67,6 +61,17 @@ export default function OutwardMonitor() {
       }
     };
     load();
+  }, [page, filters]);
+
+  useEffect(() => {
+    Promise.all([
+      base44.movements.dashboardSummary({ direction: "Outward" }),
+      user?.id ? base44.entities.SavedFilter.filter({ user_id: user.id }, "-created_at", 100) : Promise.resolve([]),
+    ]).then(([summary, rows]) => {
+      const source = summary.options || {};
+      setOptions({ divisions: ["All", ...(source.division || [])], states: source.state || [], districts: source.district || [], stations: source.station || [], commodities: source.commodity || [], rakeCmdts: source.rake || [] });
+      setSavedFilters((rows || []).filter((row) => row.source === SAVED_SOURCE));
+    }).catch((error) => console.error("[OutwardMonitor] options load failed:", error));
   }, [user?.id]);
 
   useEffect(() => {
@@ -76,77 +81,7 @@ export default function OutwardMonitor() {
     if (persisted) applyFilterState(persisted);
   }, [user?.id]);
 
-  const options = useMemo(() => {
-    const scopedByDivision =
-      filters.division === "All"
-        ? allRecords
-        : allRecords.filter((record) => record.division === filters.division);
-
-    const commodityScoped =
-      filters.commodities.length === 0
-        ? allRecords
-        : allRecords.filter((record) => filters.commodities.includes(getCommodityCode(record)));
-
-    const states = new Set();
-    const districts = new Set();
-    const stations = new Map();
-    const commodities = new Map();
-    const rakeCmdts = new Map();
-
-    scopedByDivision.forEach((record) => {
-      const state = getSourceState(record);
-      const district = getSourceDistrict(record);
-      if (state) states.add(state);
-      if (filters.states.length === 0 || filters.states.includes(state)) {
-        if (district) districts.add(district);
-      }
-      if (record.station_from) {
-        stations.set(record.station_from, formatStationNameAndCode(record.station_from));
-      }
-    });
-
-    allRecords.forEach((record) => {
-      const commodityCode = getCommodityCode(record);
-      if (commodityCode) commodities.set(commodityCode, getCommodityDisplay(record));
-
-    });
-
-    commodityScoped.forEach((record) => {
-      const rakeCmdt = getRakeCmdtCode(record);
-      if (rakeCmdt) rakeCmdts.set(rakeCmdt, getRakeCmdtDisplay(record));
-    });
-
-    return {
-      divisions: ["All", ...new Set(allRecords.map((record) => record.division).filter(Boolean))].sort(),
-      states: [...states].sort(),
-      districts: [...districts].sort(),
-      stations: mapOptions(stations),
-      commodities: mapOptions(commodities),
-      rakeCmdts: mapOptions(rakeCmdts),
-    };
-  }, [allRecords, filters.commodities, filters.division, filters.states]);
-
-  const filtered = useMemo(() => {
-    const q = filters.search.trim().toLowerCase();
-
-    return allRecords.filter((record) => {
-      const state = getSourceState(record);
-      const district = getSourceDistrict(record);
-
-      return (
-        recordMatchesSearch(record, q) &&
-        (filters.division === "All" || record.division === filters.division) &&
-        optionMatches(filters.states, state) &&
-        optionMatches(filters.districts, district) &&
-        optionMatches(filters.stations, record.station_from || "") &&
-        optionMatches(filters.commodities, getCommodityCode(record)) &&
-        optionMatches(filters.rakeCmdts, getRakeCmdtCode(record))
-      );
-    });
-  }, [allRecords, filters]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
-  const pageRecords = filtered.slice((page - 1) * PER_PAGE, page * PER_PAGE);
+  const pageRecords = allRecords;
   const hasActiveFilters = hasSavedFilterValues(filters);
 
   function resetPage() {
@@ -308,7 +243,7 @@ export default function OutwardMonitor() {
         <div className="flex items-center justify-between border-b border-border px-5 py-3">
           <h3 className="font-semibold text-foreground">Outward Records</h3>
           <span className="text-xs text-muted-foreground">
-            {filtered.length} records{filtered.length !== allRecords.length && ` (filtered from ${allRecords.length})`}
+            {totalRecords} records
           </span>
         </div>
         <div className="overflow-x-auto">
@@ -372,8 +307,8 @@ export default function OutwardMonitor() {
           </table>
         </div>
 
-        {!loading && filtered.length > 0 && totalPages > 1 && (
-          <Pagination page={page} totalPages={totalPages} totalRecords={filtered.length} onPage={setPage} />
+        {!loading && totalRecords > 0 && totalPages > 1 && (
+          <Pagination page={page} totalPages={totalPages} totalRecords={totalRecords} onPage={setPage} />
         )}
       </div>
 
