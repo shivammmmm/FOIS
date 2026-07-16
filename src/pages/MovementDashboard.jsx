@@ -23,16 +23,20 @@ import { base44 } from "@/api/base44Client";
 import { getCommodityColor } from "@/utils/railwayDictionary";
 import { formatStationNameAndCode } from "@/utils/stationMaster";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
+import { buildFilterHierarchyOptions } from "@/utils/filterHierarchy";
 
 export default function MovementDashboard({ direction = "Inward" }) {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
+  const [hierarchy, setHierarchy] = useState(null);
   const [filters, setFilters] = useState({ zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] });
   const isInward = direction === "Inward";
   const Icon = isInward ? ArrowDownToLine : ArrowUpFromLine;
   const accent = isInward ? "text-emerald-500" : "text-blue-500";
   const barColor = isInward ? "#10B981" : "#3B82F6";
+
+  useEffect(() => { base44.filterHierarchy().then(setHierarchy).catch(() => undefined); }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -53,7 +57,9 @@ export default function MovementDashboard({ direction = "Inward" }) {
     return () => controller.abort();
   }, [direction, filters]);
 
-  const options = summary?.options || { zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] };
+  const sourceOptions = summary?.options || { zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] };
+  const scoped = buildFilterHierarchyOptions(hierarchy || {}, { state: filters.state, district: filters.district, commodity: filters.commodity });
+  const options = { ...sourceOptions, state: scoped.states, district: scoped.districts, station: scoped.stations, commodity: scoped.commodities, rake: scoped.rakeCmdts };
   const stats = summary || { pending: "—", arrived: "—", departed: "—", delayed: "—", commodityData: [], divisionData: [], stationData: [], trendData: [] };
 
   const cards = isInward
@@ -85,7 +91,7 @@ export default function MovementDashboard({ direction = "Inward" }) {
       </div>
 
       <div className="flex flex-wrap gap-2 rounded-xl border border-border bg-card p-3">
-        {[["zone","Zone"],["division","Division"],["state","State"],["district","District"],["station","Station"],["commodity","Commodity"],["rake","Rake CMDT"],["company","Company"]].map(([key, label]) => options[key].length > 0 && <MultiSelectFilter key={key} label={label} selected={filters[key]} options={options[key]} placeholder={`All ${label}`} onChange={(value) => setFilters((prev) => key === 'state' ? { ...prev, state: value, district: [], station: [] } : { ...prev, [key]: value })} />)}
+        {[["zone","Zone"],["division","Division"],["state","State"],["district","District"],["station","Station"],["commodity","Commodity"],["rake","Rake CMDT"],["company","Company"]].map(([key, label]) => options[key].length > 0 && <MultiSelectFilter key={key} label={label} selected={filters[key]} options={options[key]} placeholder={`All ${label}`} onChange={(value) => setFilters((prev) => key === 'state' ? { ...prev, state: value, district: [], station: [] } : key === 'district' ? { ...prev, district: value, station: [] } : key === 'commodity' ? { ...prev, commodity: value, rake: [] } : { ...prev, [key]: value })} />)}
         <button type="button" onClick={() => setFilters({ zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] })} className="rounded-lg border border-border px-3 py-2 text-xs">Clear Filters</button>
       </div>
 

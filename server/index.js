@@ -27,7 +27,7 @@ import {
 } from "./storage.js";
 
 import { createNotification } from "./notifications/service.js";
-import { movementDashboardSummary, pagedFoisReports, pagedMovements } from "./movementQueries.js";
+import { filterHierarchy, movementDashboardSummary, pagedFoisReports, pagedMovements } from "./movementQueries.js";
 import { invalidateCachePrefix } from "./cache.js";
 
 import {
@@ -1737,6 +1737,10 @@ app.get("/api/fois-reports", requireAuth, async (req, res, next) => {
       unmappedOnly: req.query.unmappedOnly === "true",
     }));
   } catch (error) { next(error); }
+});
+
+app.get("/api/filter-hierarchy", requireAuth, async (_req, res, next) => {
+  try { res.json(await filterHierarchy()); } catch (error) { next(error); }
 });
 
 app.get("/api/entities/:entityName", requireAuth, async (req, res, next) => {

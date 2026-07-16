@@ -75,7 +75,7 @@ export async function movementDashboardSummary(input) {
          GROUP BY 1 ORDER BY name DESC LIMIT 12`, ctx.params
       ),
       ...Object.values(ctx.expressions).map((expression) =>
-        pool.query(`SELECT DISTINCT ${expression} AS value FROM freight_movements WHERE data->>'movement_type' = $1 AND ${expression} IS NOT NULL ORDER BY value LIMIT 2000`, [ctx.direction])
+        pool.query(`SELECT DISTINCT ${expression} AS value FROM freight_movements WHERE ${ctx.where} AND ${expression} IS NOT NULL ORDER BY value LIMIT 2000`, ctx.params)
       ),
     ]);
     const facetKeys = Object.keys(ctx.expressions);
@@ -176,6 +176,35 @@ export async function pagedFoisReports(input = {}) {
       total: metadata.total, page, limit,
       totalPages: Math.max(1, Math.ceil(metadata.total / limit)),
       options: metadata.options,
+    };
+  });
+}
+
+export async function filterHierarchy() {
+  return cachedJson("movement:filter-hierarchy:v1", 300, async () => {
+    const [states, districts, stations, pairs, masters] = await Promise.all([
+      pool.query("SELECT code, name FROM state_master WHERE active IS DISTINCT FROM FALSE ORDER BY name, code"),
+      pool.query("SELECT code, name, parent_code FROM district_master WHERE active IS DISTINCT FROM FALSE ORDER BY name, code"),
+      pool.query("SELECT station_code AS code, station_name AS name, state, district FROM station_master WHERE active IS DISTINCT FROM FALSE AND is_active IS DISTINCT FROM FALSE ORDER BY station_name, station_code"),
+      pool.query(`SELECT DISTINCT COALESCE(commodity_code, data->>'commodity_code', data->>'commodity') AS commodity,
+        COALESCE(rake_commodity_code, data->>'rake_commodity_code', data->>'rake_cmdt') AS rake
+        FROM freight_movements`),
+      pool.query("SELECT code, name, type FROM commodity_master WHERE is_active IS DISTINCT FROM FALSE"),
+    ]);
+    const labels = new Map(masters.rows.map((row) => [`${row.type}:${row.code}`, row.name]));
+    const commodityCodes = [...new Set(pairs.rows.map((row) => row.commodity).filter(Boolean))].sort();
+    const rakeMap = new Map();
+    for (const row of pairs.rows) {
+      if (!row.rake || /^(BOX|BOB|BOS|BCN|BTP|NMG)/i.test(row.rake) || /^\d+$/.test(row.rake)) continue;
+      if (!rakeMap.has(row.rake)) rakeMap.set(row.rake, new Set());
+      if (row.commodity) rakeMap.get(row.rake).add(row.commodity);
+    }
+    return {
+      states: states.rows,
+      districts: districts.rows.map((row) => ({ code: row.code, name: row.name, parentCode: row.parent_code })),
+      stations: stations.rows,
+      commodities: commodityCodes.map((code) => ({ code, name: labels.get(`Commodity:${code}`) || code })),
+      rakes: [...rakeMap].map(([code, commodities]) => ({ code, name: labels.get(`Rake CMDT:${code}`) || code, commodities: [...commodities] })),
     };
   });
 }

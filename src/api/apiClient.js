@@ -370,6 +370,7 @@ export const apiClient = {
       return request(`/api/fois-reports?${params}`);
     },
   },
+  filterHierarchy: () => request("/api/filter-hierarchy"),
 
   entities: {
     FreightMovement: createEntityApi("FreightMovement"),
