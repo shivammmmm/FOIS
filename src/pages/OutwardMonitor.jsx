@@ -4,11 +4,11 @@ import { base44 } from "@/api/base44Client";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
 import FreightDetailsModal from "@/components/FreightDetailsModal";
 import { useAuth } from "@/lib/AuthContext";
-import { getDivisionName } from "@/utils/railwayDictionary";
 import {
   getBusinessRakeCmdtDisplay as getRakeCmdtDisplay,
 } from "@/utils/freightRecordFilters";
 import { formatStationNameAndCode, getStationMeta, registerStationMetaFromRecords } from "@/utils/stationMaster";
+import { buildFilterHierarchyOptions } from "@/utils/filterHierarchy";
 import { formatFoisDateTime } from "@/utils/foisDateTime";
 import {
   clearPersistentFilters,
@@ -24,7 +24,8 @@ const SAVED_SOURCE = "Outward Monitor";
 
 const DEFAULT_FILTERS = {
   search: "",
-  division: "All",
+  zone: [],
+  division: [],
   states: [],
   districts: [],
   stations: [],
@@ -43,13 +44,22 @@ export default function OutwardMonitor() {
   const [page, setPage] = useState(1);
   const [totalRecords, setTotalRecords] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
-  const [options, setOptions] = useState({ divisions: ["All"], states: [], districts: [], stations: [], commodities: [], rakeCmdts: [] });
+  const [options, setOptions] = useState({ commodities: [], rakeCmdts: [] });
+  const [hierarchy, setHierarchy] = useState(null);
+
+  const scoped = buildFilterHierarchyOptions(hierarchy || {}, {
+    zone: filters.zone,
+    division: filters.division,
+    state: filters.states,
+    district: filters.districts,
+    commodity: filters.commodities,
+  });
 
   useEffect(() => {
     const load = async () => {
       setLoading(true);
       try {
-        const data = await base44.movements.page({ direction: "Outward", page, limit: PER_PAGE, search: filters.search, division: filters.division === "All" ? [] : [filters.division], state: filters.states, district: filters.districts, station: filters.stations, commodity: filters.commodities, rake: filters.rakeCmdts });
+        const data = await base44.movements.page({ direction: "Outward", page, limit: PER_PAGE, search: filters.search, division: filters.division, state: filters.states, district: filters.districts, station: filters.stations, commodity: filters.commodities, rake: filters.rakeCmdts });
         registerStationMetaFromRecords(data.items || []);
         setAllRecords(data.items || []);
         setTotalRecords(data.total || 0);
@@ -66,10 +76,12 @@ export default function OutwardMonitor() {
   useEffect(() => {
     Promise.all([
       base44.movements.dashboardSummary({ direction: "Outward" }),
+      base44.filterHierarchy("Outward"),
       user?.id ? base44.entities.SavedFilter.filter({ user_id: user.id }, "-created_at", 100) : Promise.resolve([]),
-    ]).then(([summary, rows]) => {
+    ]).then(([summary, hierarchyData, rows]) => {
       const source = summary.options || {};
-      setOptions({ divisions: ["All", ...(source.division || [])], states: source.state || [], districts: source.district || [], stations: source.station || [], commodities: source.commodity || [], rakeCmdts: source.rake || [] });
+      setOptions({ commodities: source.commodity || [], rakeCmdts: source.rake || [] });
+      setHierarchy(hierarchyData);
       setSavedFilters((rows || []).filter((row) => row.source === SAVED_SOURCE));
     }).catch((error) => console.error("[OutwardMonitor] options load failed:", error));
   }, [user?.id]);
@@ -96,7 +108,8 @@ export default function OutwardMonitor() {
   function applyFilterState(nextFilters) {
     setFilters({
       search: nextFilters.search || "",
-      division: nextFilters.division || nextFilters.filterDivision || "All",
+      zone: normalizeMultiValue(nextFilters.zone ?? nextFilters.filterZone),
+      division: normalizeMultiValue(nextFilters.division ?? nextFilters.filterDivision),
       states: normalizeMultiValue(nextFilters.states ?? nextFilters.filterState),
       districts: normalizeMultiValue(nextFilters.districts ?? nextFilters.filterDistrict),
       stations: normalizeMultiValue(nextFilters.stations ?? nextFilters.selectedStations),
@@ -138,30 +151,30 @@ export default function OutwardMonitor() {
         </div>
 
         <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          <select
-            value={filters.division}
-            onChange={(event) => {
-              setFilters((prev) => ({
-                ...prev,
-                division: event.target.value,
-                states: [],
-                districts: [],
-                stations: [],
-              }));
+          <MultiSelectFilter
+            label="Zone"
+            selected={filters.zone}
+            onChange={(value) => {
+              setFilters((prev) => ({ ...prev, zone: value, division: [], stations: [] }));
               resetPage();
             }}
-            className="rounded-lg border border-border bg-muted px-3 py-2 text-sm text-foreground outline-none"
-          >
-            {options.divisions.map((division) => (
-              <option key={division} value={division}>
-                {division === "All" ? "All Divisions" : `${getDivisionName(division)} (${division})`}
-              </option>
-            ))}
-          </select>
+            options={scoped.zones}
+            placeholder="All Zones"
+          />
+          <MultiSelectFilter
+            label="Division"
+            selected={filters.division}
+            onChange={(value) => {
+              setFilters((prev) => ({ ...prev, division: value, stations: [] }));
+              resetPage();
+            }}
+            options={scoped.divisions}
+            placeholder="All Divisions"
+          />
 
-          <MultiSelectFilter label="State" selected={filters.states} onChange={(value) => { setFilters((prev) => ({ ...prev, states: value, districts: [], stations: [] })); resetPage(); }} options={options.states} placeholder="All States" />
-          <MultiSelectFilter label="District" selected={filters.districts} onChange={(value) => setFilter("districts", value)} options={options.districts} placeholder="All Districts" />
-          <MultiSelectFilter label="Station" selected={filters.stations} onChange={(value) => setFilter("stations", value)} options={options.stations} placeholder="All Stations" align="right" />
+          <MultiSelectFilter label="State" selected={filters.states} onChange={(value) => { setFilters((prev) => ({ ...prev, states: value, districts: [], stations: [] })); resetPage(); }} options={scoped.states} placeholder="All States" />
+          <MultiSelectFilter label="District" selected={filters.districts} onChange={(value) => { setFilters((prev) => ({ ...prev, districts: value, stations: [] })); resetPage(); }} options={scoped.districts} placeholder="All Districts" />
+          <MultiSelectFilter label="Station" selected={filters.stations} onChange={(value) => setFilter("stations", value)} options={scoped.stations} placeholder="All Stations" align="right" />
           <MultiSelectFilter
             label="Commodity"
             selected={filters.commodities}
@@ -433,7 +446,7 @@ const formatDateTime = formatFoisDateTime;
 function buildFilterName(filters) {
   const parts = [
     filters.search,
-    filters.division !== "All" ? filters.division : "",
+    ...filters.division,
     ...filters.states,
     ...filters.districts,
     ...filters.stations,

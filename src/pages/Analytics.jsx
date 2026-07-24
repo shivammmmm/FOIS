@@ -5,12 +5,15 @@ import {
   PieChart, Pie, Cell
 } from 'recharts';
 import { getCommodityColor, getCommodityName } from '@/utils/railwayDictionary';
+import { useMasterHierarchy } from '@/utils/masterHierarchy';
+import { isWagonType } from '@/utils/freightRecordFilters';
 import { BarChart3 } from 'lucide-react';
 
 export default function Analytics() {
   const [movements, setMovements] = useState([]);
   const [indents, setIndents] = useState([]);
   const [loading, setLoading] = useState(true);
+  const { getDivisionName } = useMasterHierarchy();
 
   useEffect(() => {
     const load = async () => {
@@ -30,7 +33,7 @@ export default function Analytics() {
   // Division breakdown
   const divMap = {};
   movements.forEach(m => { const d = m.division || 'Unknown'; divMap[d] = (divMap[d] || 0) + 1; });
-  const divData = Object.entries(divMap).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 8);
+  const divData = Object.entries(divMap).map(([code, count]) => ({ name: getDivisionName(code), count })).sort((a, b) => b.count - a.count).slice(0, 8);
 
   // Commodity breakdown
   const commMap = {};
@@ -54,7 +57,11 @@ export default function Analytics() {
 
   // Rake CMDT
   const rakeMap = {};
-  movements.forEach(m => { const r = m.rake_commodity_code || m.rake_cmdt || 'Unknown'; rakeMap[r] = (rakeMap[r] || 0) + 1; });
+  movements.forEach(m => {
+    const r = m.rake_commodity_code || m.rake_cmdt || 'Unknown';
+    if (isWagonType(r)) return;
+    rakeMap[r] = (rakeMap[r] || 0) + 1;
+  });
   const rakeData = Object.entries(rakeMap).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 8);
 
   // ODR vs Indent comparison

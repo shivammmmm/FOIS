@@ -14,7 +14,8 @@ export default function NotificationBell({ isAdmin = false }) {
   const load = async () => {
     setLoading(true);
     try {
-      const rows = await base44.notifications.list();
+      const response = await base44.notifications.list({ page: 1, limit: 100 });
+      const rows = response?.items || [];
       setNotifications(rows);
       setUnread(rows.filter((item) => !item.is_read).length);
     } catch (e) { /* ignore */ }

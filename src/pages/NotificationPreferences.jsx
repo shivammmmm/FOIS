@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Bell, Save, Trash2 } from "lucide-react";
 import { base44 } from "@/api/base44Client";
-import { apiClient } from "@/api/apiClient";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
 import { useAuth } from "@/lib/AuthContext";
-import { getDivisionName } from "@/utils/railwayDictionary";
-import { getStationMeta } from "@/utils/stationMaster";
+import { buildFilterHierarchyOptions } from "@/utils/filterHierarchy";
 
 const CHANNEL_OPTIONS = [
   ["in_app_enabled", "In App"],
@@ -38,12 +36,7 @@ export default function NotificationPreferences() {
   const [recordId, setRecordId] = useState(null);
   const [prefs, setPrefs] = useState(DEFAULTS);
   const [saving, setSaving] = useState(false);
-  const [stationsPool, setStationsPool] = useState([]);
-  const [statesPool, setStatesPool] = useState([]);
-  const [districtsPool, setDistrictsPool] = useState([]);
-  const [divisionMasters, setDivisionMasters] = useState([]);
-  const [commodityMasters, setCommodityMasters] = useState([]);
-  const [rakeCmdtMasters, setRakeCmdtMasters] = useState([]);
+  const [hierarchy, setHierarchy] = useState(null);
   const [loadErrors, setLoadErrors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -53,40 +46,23 @@ export default function NotificationPreferences() {
       if (!user?.id) return;
 
       try {
-        const requests = [
+        const [prefsResult, hierarchyResult] = await Promise.allSettled([
           base44.entities.UserNotificationPreference.filter({ user_id: user.id }),
-          apiClient.stationMaster.list({ limit: 10000 }),
-          apiClient.readOnlyMasters.states(),
-          apiClient.readOnlyMasters.districts(),
-          apiClient.masterCatalog.list("division", { limit: 500 }),
-          apiClient.masterCatalog.list("commodity", { limit: 500 }),
-          apiClient.masterCatalog.list("rake-cmdt", { limit: 500 }),
-        ];
-        const results = await Promise.allSettled(requests);
-        const value = (index, fallback) => results[index].status === "fulfilled" ? results[index].value : fallback;
-        const errors = [];
-        if (results[2].status === "rejected") errors.push("State load failed");
-        if (results[3].status === "rejected") errors.push("District load failed");
-        if (results[1].status === "rejected") errors.push("Station load failed");
-        setLoadErrors(errors);
-        const rows = value(0, []);
-        const stationData = value(1, { items: [] });
-        const stateData = value(2, []);
-        const districtData = value(3, []);
+          base44.filterHierarchy(),
+        ]);
 
+        const errors = [];
+        if (hierarchyResult.status === "rejected") errors.push("Master/report data load failed");
+        setLoadErrors(errors);
+        setHierarchy(hierarchyResult.status === "fulfilled" ? hierarchyResult.value : {});
+
+        const rows = prefsResult.status === "fulfilled" ? prefsResult.value : [];
         const existing = rows?.[0];
         if (existing) {
           setRecordId(existing.id);
           setPrefs(toPreferenceState(existing));
           setLastUpdated(existing.updated_date || existing.updated_at || existing.created_date);
         }
-
-        setStationsPool(extractItems(stationData));
-        setStatesPool(extractItems(stateData));
-        setDistrictsPool(extractItems(districtData));
-        setDivisionMasters(extractItems(value(4, [])));
-        setCommodityMasters(extractItems(value(5, [])));
-        setRakeCmdtMasters(extractItems(value(6, [])));
       } catch (error) {
         console.error("[NotificationPreferences] load failed:", error);
       } finally {
@@ -97,65 +73,19 @@ export default function NotificationPreferences() {
     load();
   }, [user?.id]);
 
-  const stationMetaByCode = useMemo(() => {
-    const map = new Map();
-    stationsPool.forEach((station) => {
-      const code = station.station_code || station.code;
-      if (!code) return;
-      const state = resolveMasterCode(station.state, statesPool);
-      const district = resolveDistrictCode(station.district, state, districtsPool);
-      map.set(String(code).toUpperCase(), {
-        zone: station.zone || "",
-        state,
-        district,
-        name: station.station_name || station.name || code,
-      });
-    });
-    return map;
-  }, [districtsPool, statesPool, stationsPool]);
-
-  const options = useMemo(() => {
-    const zones = new Set();
-    const divisions = new Map();
-    const states = new Map(statesPool.filter((state) => state.active !== false).map((state) => [state.code, state.name]));
-    const selectedStateCodes = new Set(prefs.states);
-    const districts = new Map(districtsPool.filter((district) => district.active !== false && selectedStateCodes.has(district.parent_code)).map((district) => [district.code, district.name]));
-    const stations = new Map();
-    const commodities = new Map();
-    const rakeCmdts = new Map();
-    const divisionLabels = masterLabelMap(divisionMasters);
-    const commodityLabels = masterLabelMap(commodityMasters);
-    const rakeLabels = masterLabelMap(rakeCmdtMasters);
-
-    divisionMasters.forEach((row) => {
-      const code = String(row.code || row.division_code || "").trim();
-      if (code) divisions.set(code, formatMasterLabel(code, divisionLabels.get(code) || getDivisionName(code)));
-    });
-    commodityMasters.forEach((row) => {
-      const code = String(row.code || row.commodity_code || "").trim();
-      if (code) commodities.set(code, formatMasterLabel(code, commodityLabels.get(code)));
-    });
-    rakeCmdtMasters.forEach((row) => {
-      const code = String(row.code || row.rake_commodity_code || "").trim();
-      if (code) rakeCmdts.set(code, formatMasterLabel(code, rakeLabels.get(code)));
-    });
-    stationMetaByCode.forEach((meta, code) => {
-      if (prefs.states.length && !prefs.states.includes(meta.state)) return;
-      if (prefs.districts.length && !prefs.districts.includes(meta.district)) return;
-      stations.set(code, meta.name && meta.name !== code ? `${meta.name} (${code})` : code);
-      if (meta.zone) zones.add(meta.zone);
-    });
-
-    return {
-      zones: [...zones].sort(),
-      divisions: mapOptions(divisions),
-      states: mapOptions(states),
-      districts: mapOptions(districts),
-      stations: mapOptions(stations),
-      commodities: mapOptions(commodities),
-      rakeCmdts: mapOptions(rakeCmdts),
-    };
-  }, [commodityMasters, districtsPool, divisionMasters, prefs.districts, prefs.states, rakeCmdtMasters, statesPool, stationMetaByCode]);
+  // Master data if it exists for a code, otherwise fall back to the raw code/name
+  // as it appears in FOIS Report data (see buildFilterHierarchyOptions / filterHierarchy()).
+  const options = useMemo(
+    () =>
+      buildFilterHierarchyOptions(hierarchy || {}, {
+        zone: prefs.zones,
+        division: prefs.divisions,
+        state: prefs.states,
+        district: prefs.districts,
+        commodity: prefs.commodities,
+      }),
+    [hierarchy, prefs.zones, prefs.divisions, prefs.states, prefs.districts, prefs.commodities]
+  );
 
   async function save() {
     if (!user?.id) return;
@@ -243,8 +173,8 @@ export default function NotificationPreferences() {
           <div className="space-y-4">
             {loadErrors.length > 0 && <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">{loadErrors.join(" · ")}</div>}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <MultiSelectFilter label="Zone" selected={prefs.zones} onChange={(value) => setPref("zones", value)} options={options.zones} placeholder="All Zones" />
-              <MultiSelectFilter label="Division" selected={prefs.divisions} onChange={(value) => setPref("divisions", value)} options={options.divisions} placeholder="All Divisions" />
+              <MultiSelectFilter label="Zone" selected={prefs.zones} onChange={(value) => setPrefs((prev) => ({ ...prev, zones: value, divisions: [], stations: [] }))} options={options.zones} placeholder="All Zones" />
+              <MultiSelectFilter label="Division" selected={prefs.divisions} onChange={(value) => setPrefs((prev) => ({ ...prev, divisions: value, stations: [] }))} options={options.divisions} placeholder="All Divisions" />
               <MultiSelectFilter label="State" selected={prefs.states} onChange={(value) => setPrefs((prev) => ({ ...prev, states: value, districts: [], stations: [] }))} options={options.states} placeholder="All States" />
               <MultiSelectFilter label="District" selected={prefs.districts} onChange={(value) => setPrefs((prev) => ({ ...prev, districts: value, stations: [] }))} options={options.districts} placeholder={prefs.states.length ? "All Districts" : "Select State first"} disabled={!prefs.states.length} />
               <MultiSelectFilter label="Station" selected={prefs.stations} onChange={(value) => setPref("stations", value)} options={options.stations} placeholder="All Stations" />
@@ -304,94 +234,6 @@ function ToggleRow({ label, checked, onChange }) {
       />
     </label>
   );
-}
-
-function getStationPreferenceMeta(code, stationMetaByCode) {
-  const normalized = String(code || "").toUpperCase();
-  const dbMeta = stationMetaByCode.get(normalized);
-  const fallback = getStationMeta(code);
-  return {
-    name: dbMeta?.name || fallback?.name || normalized,
-    zone: dbMeta?.zone || fallback?.zone || "",
-    state: dbMeta?.state || fallback?.state || "",
-    district: dbMeta?.district || fallback?.district || "",
-  };
-}
-
-function getMovementStations(record) {
-  const rows = [
-    { code: record.station_from || readRaw(record, "STTN FROM"), state: record.from_state || readRaw(record, "State (Source)"), district: record.from_district || readRaw(record, "District (Source)"), zone: record.from_zone || record.zone },
-    { code: record.station_to || readRaw(record, "DSTN"), state: record.to_state || readRaw(record, "State (To)"), district: record.to_district || readRaw(record, "District (To)"), zone: record.to_zone || record.zone },
-  ];
-  return rows
-    .map((station) => ({ ...station, code: String(station.code || "").trim().toUpperCase() }))
-    .filter((station) => station.code);
-}
-
-function resolveMasterCode(value, masters) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  const normalized = raw.toUpperCase();
-  const match = masters.find((item) =>
-    String(item.code || "").trim().toUpperCase() === normalized ||
-    String(item.name || "").trim().toUpperCase() === normalized
-  );
-  return String(match?.code || raw).trim().toUpperCase();
-}
-
-function resolveDistrictCode(value, stateCode, districts) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  const normalized = raw.toUpperCase();
-  const match = districts.find((item) => {
-    const sameDistrict =
-      String(item.code || "").trim().toUpperCase() === normalized ||
-      String(item.name || "").trim().toUpperCase() === normalized;
-    const sameState = !stateCode || String(item.parent_code || "").trim().toUpperCase() === stateCode;
-    return sameDistrict && sameState;
-  });
-  return String(match?.code || raw).trim().toUpperCase();
-}
-
-function readRaw(record, ...keys) {
-  const normalized = Object.fromEntries(Object.entries(record?.raw_data || {}).map(([key, value]) => [String(key).trim().toUpperCase(), value]));
-  for (const key of keys) {
-    const value = record?.raw_data?.[key] ?? record?.[key] ?? normalized[String(key).trim().toUpperCase()];
-    if (value !== undefined && value !== null && String(value).trim() !== "") return value;
-  }
-  return "";
-}
-
-function getCommodityCode(record) {
-  return String(record.commodity || record.cmdt || readRaw(record, "CMDT", "cmdt", "Commodity") || record.commodity_code || "").trim();
-}
-
-function getDivisionCode(record) {
-  return String(record.division || record.dvsn || readRaw(record, "DVSN", "division") || "").trim();
-}
-
-function extractItems(response) {
-  if (Array.isArray(response)) return response;
-  if (Array.isArray(response?.items)) return response.items;
-  if (Array.isArray(response?.rows)) return response.rows;
-  if (Array.isArray(response?.data)) return response.data;
-  return [];
-}
-
-function masterLabelMap(rows) {
-  return new Map(rows.map((row) => [String(row.code || row.commodity_code || "").trim(), row.name || row.commodity_name || ""]).filter(([code]) => code));
-}
-
-function formatMasterLabel(code, name) {
-  const raw = String(code || "").trim();
-  const full = String(name || "").trim();
-  return full && full.toUpperCase() !== raw.toUpperCase() ? `${full} (${raw})` : raw;
-}
-
-function mapOptions(map) {
-  return [...map.entries()]
-    .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
-    .map(([value, label]) => ({ value, label, searchText: `${label} ${value}` }));
 }
 
 function toPreferenceState(existing = {}) {

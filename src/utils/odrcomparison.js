@@ -47,7 +47,11 @@ export function parseODRRow(row, batchId) {
   if (!fields.srNo || !fields.division || !fields.indentNo) return null;
 
   const movementType = detectMovementType(fields.pc, fields.indentType, fields.tt);
-  const status = detectStatus(fields.expectedLoadingDate);
+  const status = detectStatus({
+    expectedLoadingDate: fields.expectedLoadingDate,
+    suppliedTime: fields.suppliedTime || fields.suppliedUnits,
+    movementType,
+  });
 
   const rawRakeCmdt = fields.rakeCmdt || "";
   const isWagon = isWagonType(rawRakeCmdt);
@@ -55,7 +59,6 @@ export function parseODRRow(row, batchId) {
 
   return {
     odr_number: fields.indentNo,
-    zone: fields.division,
     division: fields.division,
     station_from: fields.stationFrom,
     station_to: fields.destination,
@@ -93,7 +96,6 @@ export function parseIndentRow(row, batchId) {
 
   return {
     indent_number: fields.indentNo,
-    zone: fields.division,
     division: fields.division,
     station_from: fields.stationFrom,
     station_to: fields.destination,
@@ -269,14 +271,17 @@ function detectMovementType(category, type, flag2) {
   return 'Unknown';
 }
 
-function detectStatus(arrivalDate) {
-  if (!arrivalDate) return 'Pending';
-  const d = normalizeDate(arrivalDate);
+function detectStatus({ expectedLoadingDate, suppliedTime, movementType } = {}) {
+  if (suppliedTime) {
+    return movementType === 'Outward' ? 'Departed' : 'Arrived';
+  }
+  if (!expectedLoadingDate) return 'Pending';
+  const d = normalizeDate(expectedLoadingDate);
   if (!d) return 'Pending';
-  const arrival = new Date(d);
+  const expected = new Date(d);
   const now = new Date();
-  if (arrival <= now) return 'Arrived';
-  return 'In Transit';
+  if (expected > now) return 'In Transit';
+  return 'Delayed';
 }
 
 function normalizeDate(val) {

@@ -115,7 +115,8 @@ export const apiClient = {
     districts: (state = "") => request(`/api/masters/districts${state ? `?state=${encodeURIComponent(state)}` : ""}`),
   },
   notifications: {
-    list: () => request("/api/notifications"),
+    list: ({ page = 1, limit = 50 } = {}) =>
+      request(`/api/notifications?page=${encodeURIComponent(page)}&limit=${encodeURIComponent(limit)}`),
     markRead: (id) => request(`/api/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
     markAllRead: () => request("/api/notifications/mark-all-read", { method: "POST" }),
   },
@@ -370,7 +371,8 @@ export const apiClient = {
       return request(`/api/fois-reports?${params}`);
     },
   },
-  filterHierarchy: () => request("/api/filter-hierarchy"),
+  filterHierarchy: (direction) => request(`/api/filter-hierarchy${direction ? `?direction=${direction}` : ""}`),
+  unmappedSummary: () => request("/api/masters/unmapped-summary"),
 
   entities: {
     FreightMovement: createEntityApi("FreightMovement"),

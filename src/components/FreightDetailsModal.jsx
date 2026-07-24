@@ -1,17 +1,24 @@
 import { X } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
-import { getCommodityName, getStationName } from "@/utils/railwayDictionary";
+import { getCommodityName } from "@/utils/railwayDictionary";
+import { useMasterHierarchy } from "@/utils/masterHierarchy";
 
 export default function FreightDetailsModal({ record, onClose }) {
+  const { getZoneName, getDivisionName, getZoneForDivision } = useMasterHierarchy();
   if (!record) return null;
 
   const commodity = getCommodityName(record.commodity);
-  const fromStation = record.from_station_name || getStationName(record.station_from);
-  const toStation = record.to_station_name || getStationName(record.station_to);
+  const fromStation = record.from_station_name || record.station_from || "-";
+  const toStation = record.to_station_name || record.station_to || "-";
   const district = record.to_district || record.from_district || "-";
   const state = record.to_state || record.from_state || "-";
-  const division = record.to_division || record.from_division || record.division || "-";
-  const zone = record.to_zone || record.from_zone || record.zone || "-";
+  const divisionCode = record.to_division || record.from_division || record.division || "";
+  // to_zone/from_zone come from the station's own master record when known;
+  // otherwise derive zone from the division, never from the unreliable
+  // movement-level "zone" field (uploaded files carry no real zone column).
+  const zoneCode = record.to_zone || record.from_zone || "";
+  const division = divisionCode ? getDivisionName(divisionCode) : "-";
+  const zone = zoneCode ? getZoneName(zoneCode) : (getZoneForDivision(divisionCode) || "-");
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
