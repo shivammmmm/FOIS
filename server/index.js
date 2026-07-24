@@ -1,10 +1,11 @@
 import "./loadEnv.js";
+import crypto from "crypto";
 import cors from "cors";
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import * as XLSX from "xlsx";
-import { runSeeder } from "../scripts/seedMasters.js";
+import { runSeeder, runZoneDivisionSeeder } from "../scripts/seedMasters.js";
 import {
   countTables,
   createRecord,
@@ -27,7 +28,7 @@ import {
 } from "./storage.js";
 
 import { createNotification } from "./notifications/service.js";
-import { filterHierarchy, movementDashboardSummary, pagedFoisReports, pagedMovements } from "./movementQueries.js";
+import { filterHierarchy, movementDashboardSummary, pagedFoisReports, pagedMovements, unmappedSummary } from "./movementQueries.js";
 import { invalidateCachePrefix } from "./cache.js";
 
 import {
@@ -46,7 +47,6 @@ import {
   ensureStationMasterTable,
 } from "./utils/masterCatalogMigration.js";
 import {
-  compareODRwithIndents,
   generateBatchId,
   getIndentRowRejectionReason,
   parseIndentRow,
@@ -517,7 +517,7 @@ async function createMovementPreferenceNotifications(records, batchId) {
         related_odr: movement.odr_number || null,
         related_division: movement.division || null,
         batch_id: batchId,
-        data: { movement, station_display: stationDisplay, rake_count: rakeCount, commodity_display: commodityDisplay, consignor, updated_at: updatedAt },
+        data: { movement, movements: group.records, station_display: stationDisplay, rake_count: rakeCount, commodity_display: commodityDisplay, consignor, updated_at: updatedAt },
       });
     } catch (error) {
       console.error("[NotificationDelivery] in-app notification failed", {
@@ -791,7 +791,7 @@ app.get("/api/masters/districts", requireAuth, async (req, res) => {
     const { Pool } = await import("pg");
     const databaseUrl = process.env.DATABASE_URL || "postgresql://fois_user:fois_password@localhost:5432/fois_db";
     const pool = new Pool({ connectionString: databaseUrl });
-    const state = String(req.query.state || "").trim().toUpperCase();
+    const state = String(req.query.state || req.query.state_code || req.query.state_id || "").trim().toUpperCase();
     const result = await pool.query(
       `SELECT id, code, name, parent_code, active
        FROM district_master
@@ -1147,6 +1147,22 @@ app.post(
 
       const batchId = generateBatchId();
       const buffer = isBinaryUpload ? req.body : Buffer.from(String(fileBase64), "base64");
+      const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
+
+      const priorUploads = await listRecords("UploadLog", {
+        filter: { file_hash: fileHash },
+        limit: 1,
+      });
+      if (priorUploads.length > 0) {
+        const prior = priorUploads[0];
+        return res.status(409).json({
+          error: `This file was already uploaded as batch ${prior.batch_id} on ${prior.uploaded_at || prior.upload_time || prior.created_date}. Duplicate uploads are blocked.`,
+          duplicate: true,
+          batch_id: prior.batch_id,
+          uploaded_at: prior.uploaded_at || prior.upload_time || prior.created_date,
+        });
+      }
+
       const workbook = XLSX.read(buffer, { type: "buffer" });
 
       const sheetNames = Array.isArray(workbook.SheetNames)
@@ -1269,19 +1285,47 @@ app.post(
       const pool = new Pool({ connectionString: databaseUrl });
 
       if (fileType === "ODR") {
+        // odr_number alone repeats constantly across unrelated shipments (it's
+        // a small per-rake sequence, not a unique key), so duplicate detection
+        // uses the full shipment identity: same odr_number, route, commodity,
+        // and dates. Only a row matching ALL of these is a true duplicate.
+        const buildDuplicateKey = (record) =>
+          [
+            record.odr_number,
+            record.station_from,
+            record.station_to,
+            record.commodity,
+            record.arrival_date,
+            record.departure_date,
+          ].join("|");
+
         const countMap = {};
         parsedRecords.forEach((record) => {
-          countMap[record.odr_number] = (countMap[record.odr_number] || 0) + 1;
+          const key = buildDuplicateKey(record);
+          countMap[key] = (countMap[key] || 0) + 1;
         });
 
-        parsedRecords = parsedRecords.map((record) => ({
-          ...record,
-          is_duplicate: countMap[record.odr_number] > 1,
-        }));
+        const batchOdrNumbers = [...new Set(parsedRecords.map((r) => r.odr_number).filter(Boolean))];
+        const existingRows = batchOdrNumbers.length
+          ? await pool.query(
+              `SELECT data->>'odr_number' AS odr_number, data->>'station_from' AS station_from,
+                      data->>'station_to' AS station_to, data->>'commodity' AS commodity,
+                      data->>'arrival_date' AS arrival_date, data->>'departure_date' AS departure_date
+               FROM freight_movements WHERE data->>'odr_number' = ANY($1::text[])`,
+              [batchOdrNumbers]
+            )
+          : { rows: [] };
+        const existingKeySet = new Set(existingRows.rows.map((row) => buildDuplicateKey(row)));
 
-        duplicatesFound = Object.values(countMap).filter(
-          (count) => count > 1
-        ).length;
+        parsedRecords = parsedRecords.map((record) => {
+          const key = buildDuplicateKey(record);
+          return {
+            ...record,
+            is_duplicate: countMap[key] > 1 || existingKeySet.has(key),
+          };
+        });
+
+        duplicatesFound = parsedRecords.filter((record) => record.is_duplicate).length;
 
         await createRecords("FreightMovement", parsedRecords);
         await invalidateCachePrefix("movement:");
@@ -1293,29 +1337,25 @@ app.post(
           });
         });
 
-        const existingIndents = await listRecords("MaturedIndent", {
-          sort: "-created_date",
-          limit: 500,
-        });
-        const { unmatchedIndents } = compareODRwithIndents(
-          parsedRecords,
-          existingIndents
+        const missingResult = await pool.query(
+          `SELECT COUNT(*)::int AS count FROM matured_indents mi
+           WHERE NOT EXISTS (
+             SELECT 1 FROM freight_movements fm WHERE fm.data->>'odr_number' = mi.data->>'indent_number'
+           )`
         );
-        missingODRs = unmatchedIndents.length;
+        missingODRs = missingResult.rows[0]?.count || 0;
 
       } else {
         await createRecords("MaturedIndent", parsedRecords);
         insertedRecords = parsedRecords.length;
 
-        const existingODR = await listRecords("FreightMovement", {
-          sort: "-created_date",
-          limit: 500,
-        });
-        const { unmatchedIndents } = compareODRwithIndents(
-          existingODR,
-          parsedRecords
+        const missingResult = await pool.query(
+          `SELECT COUNT(*)::int AS count FROM matured_indents mi
+           WHERE NOT EXISTS (
+             SELECT 1 FROM freight_movements fm WHERE fm.data->>'odr_number' = mi.data->>'indent_number'
+           )`
         );
-        missingODRs = unmatchedIndents.length;
+        missingODRs = missingResult.rows[0]?.count || 0;
 
       }
 
@@ -1350,6 +1390,7 @@ app.post(
         original_file_name: fileName,
         file_name: fileName,
         file_type: fileType,
+        file_hash: fileHash,
         uploaded_by: req.auth?.username || "Admin",
         uploaded_at: uploadTime,
         record_count: insertedRecords,
@@ -1674,9 +1715,23 @@ app.post(
 app.get("/api/notifications", requireAuth, async (req, res, next) => {
   try {
     const userId = String(req.auth?.id || req.auth?.sub || "");
-    const rows = await listRecords("RailNotification", { sort: "-created_date", limit: 100 });
-    const allowed = rows.filter((item) => ["inward", "outward"].includes(String(item.type || "").toLowerCase()));
-    res.json(allowed.map((item) => ({ ...item, is_read: (item.read_by || []).includes(userId) })));
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
+    const offset = (page - 1) * limit;
+    const rows = await listRecords("RailNotification", {
+      sort: "-created_date",
+      limit: limit + 1,
+      offset,
+    });
+    const hasMore = rows.length > limit;
+    const pageRows = rows.slice(0, limit);
+    const allowed = pageRows.filter((item) => ["inward", "outward"].includes(String(item.type || "").toLowerCase()));
+    res.json({
+      items: allowed.map((item) => ({ ...item, is_read: (item.read_by || []).includes(userId) })),
+      page,
+      limit,
+      hasMore,
+    });
   } catch (error) { next(error); }
 });
 
@@ -1739,8 +1794,12 @@ app.get("/api/fois-reports", requireAuth, async (req, res, next) => {
   } catch (error) { next(error); }
 });
 
-app.get("/api/filter-hierarchy", requireAuth, async (_req, res, next) => {
-  try { res.json(await filterHierarchy()); } catch (error) { next(error); }
+app.get("/api/filter-hierarchy", requireAuth, async (req, res, next) => {
+  try { res.json(await filterHierarchy(req.query.direction)); } catch (error) { next(error); }
+});
+
+app.get("/api/masters/unmapped-summary", requireAuth, async (_req, res, next) => {
+  try { res.json(await unmappedSummary()); } catch (error) { next(error); }
 });
 
 app.get("/api/entities/:entityName", requireAuth, async (req, res, next) => {
@@ -2039,41 +2098,6 @@ app.post(
     }
   }
 );
-
-// Missing auth-only GET endpoint (dropdown-safe)
-app.get("/api/masters/districts", requireAuth, async (req, res, next) => {
-  try {
-    const { Pool } = await import("pg");
-    const databaseUrl =
-      process.env.DATABASE_URL ||
-      "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-    const pool = new Pool({ connectionString: databaseUrl });
-
-    const { state_code, state_id } = req.query || {};
-
-    const params = [];
-    let where = "";
-
-    const filterVal = (state_code || state_id || "").trim();
-    if (filterVal) {
-      params.push(filterVal);
-      where = " WHERE parent_code = $1";
-    }
-
-    const sql = `SELECT id, code, name, parent_code, active
-      FROM district_master${where}
-      ORDER BY name ASC`;
-
-    const result = await pool.query(sql, params);
-
-    await pool.end();
-    return res.json({ items: result.rows, count: result.rowCount });
-  } catch (e) {
-    return res
-      .status(500)
-      .json({ error: e?.message || "Failed to load districts" });
-  }
-});
 
 app.post(
   "/api/masters/districts",
@@ -2860,6 +2884,37 @@ app.use((error, _req, res, _next) => {
 
 await initializeStorage();
 await ensureSuperAdminExists(SUPER_ADMIN);
+await autoSeedMastersIfEmpty();
+
+async function autoSeedMastersIfEmpty() {
+  const { Pool } = await import("pg");
+  const databaseUrl =
+    process.env.DATABASE_URL ||
+    "postgresql://fois_user:fois_password@localhost:5432/fois_db";
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    await ensureGenericMasterTable(pool, "state_master");
+    await ensureGenericMasterTable(pool, "district_master");
+    await ensureGenericMasterTable(pool, "zone_master");
+    await ensureGenericMasterTable(pool, "division_master");
+
+    const stateCount = await pool.query("SELECT COUNT(*)::int AS count FROM state_master");
+    if ((stateCount.rows[0]?.count || 0) === 0) {
+      console.log("[Startup] state_master is empty, running state/district seeder...");
+      await runSeeder(pool);
+    }
+
+    const zoneCount = await pool.query("SELECT COUNT(*)::int AS count FROM zone_master");
+    if ((zoneCount.rows[0]?.count || 0) === 0) {
+      console.log("[Startup] zone_master is empty, running zone/division seeder...");
+      await runZoneDivisionSeeder(pool);
+    }
+  } catch (error) {
+    console.error("[Startup] auto-seed masters failed:", error?.message);
+  } finally {
+    await pool.end().catch(() => undefined);
+  }
+}
 
 console.log("Auth routes:");
 for (const layer of app._router?.stack || []) {
@@ -2879,8 +2934,4 @@ for (const layer of app._router?.stack || []) {
 
 app.listen(port, async () => {
   console.log(`FOIS API listening on http://localhost:${port}`);
-  // ==========================================================================
-  // DEPLOYMENT SAFETY LOCK: Seeder locked because Excel Import is now active!
-  // ==========================================================================
-  console.log("[Startup Guard] Seeder engine is safely locked for deployment.");
 });

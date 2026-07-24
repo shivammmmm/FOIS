@@ -10,12 +10,13 @@ import {
 import { base44 } from "@/api/base44Client";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
 import { useAuth } from "@/lib/AuthContext";
-import { getDivisionName } from "@/utils/railwayDictionary";
 import {
   getBusinessRakeCmdtCode as getRakeCmdtCode,
   getBusinessRakeCmdtDisplay as getRakeCmdtDisplay,
 } from "@/utils/freightRecordFilters";
 import { formatStationNameAndCode, getStationMeta, registerStationMetaFromRecords } from "@/utils/stationMaster";
+import { useMasterHierarchy } from "@/utils/masterHierarchy";
+import { buildFilterHierarchyOptions } from "@/utils/filterHierarchy";
 import {
   clearPersistentFilters,
   normalizeMultiValue,
@@ -26,6 +27,7 @@ import {
 
 const FILTER_SOURCE = "notifications";
 const SAVED_SOURCE = "Notifications";
+const PAGE_SIZE = 50;
 
 const TYPE_CONFIG = {
   Arrival: { icon: ArrowDownToLine, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "Arrival" },
@@ -40,6 +42,7 @@ const OUTWARD_TYPES = ["Outward", "Departure"];
 const DEFAULT_FILTERS = {
   showInward: true,
   showOutward: true,
+  zones: [],
   divisions: [],
   states: [],
   districts: [],
@@ -56,10 +59,33 @@ export default function Notifications() {
   const [savedFilters, setSavedFilters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [expanded, setExpanded] = useState(new Set());
+  const [hierarchy, setHierarchy] = useState(null);
+  const { getDivisionName } = useMasterHierarchy();
+
+  const divisionZoneCode = useMemo(
+    () => Object.fromEntries((hierarchy?.divisions || []).filter((d) => d.parentCode).map((d) => [d.code, d.parentCode])),
+    [hierarchy]
+  );
+
+  const scoped = buildFilterHierarchyOptions(hierarchy || {}, {
+    zone: filters.zones,
+    division: filters.divisions,
+    state: filters.states,
+    district: filters.districts,
+    commodity: filters.commodities,
+  });
 
   useEffect(() => {
     loadData();
   }, [user?.id]);
+
+  useEffect(() => {
+    base44.filterHierarchy().then(setHierarchy).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     if (didLoadPersisted.current || !user?.id) return;
@@ -68,25 +94,62 @@ export default function Notifications() {
     if (persisted) applyFilterState(persisted);
   }, [user?.id]);
 
+  function movementsOfNotification(row) {
+    if (Array.isArray(row.movements) && row.movements.length) return row.movements;
+    return row.movement ? [row.movement] : [];
+  }
+
   async function loadData() {
     setLoading(true);
     try {
-      const [notifData, savedRows] = await Promise.all([
-        base44.notifications.list(),
+      const [notifResponse, savedRows] = await Promise.all([
+        base44.notifications.list({ page: 1, limit: PAGE_SIZE }),
         user?.id
           ? base44.entities.SavedFilter.filter({ user_id: user.id }, "-created_at", 100)
           : Promise.resolve([]),
       ]);
-      const movData = (notifData || []).map((row) => row.movement).filter(Boolean);
-      setNotifs(notifData || []);
-      setMovements(movData || []);
-      registerStationMetaFromRecords(movData || []);
+      const notifData = notifResponse?.items || [];
+      const movData = notifData.flatMap(movementsOfNotification);
+      setNotifs(notifData);
+      setMovements(movData);
+      setPage(1);
+      setHasMore(!!notifResponse?.hasMore);
+      registerStationMetaFromRecords(movData);
       setSavedFilters((savedRows || []).filter((row) => row.source === SAVED_SOURCE));
     } catch (error) {
       console.error("[Notifications] load failed:", error);
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadMore() {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const nextPage = page + 1;
+      const notifResponse = await base44.notifications.list({ page: nextPage, limit: PAGE_SIZE });
+      const newItems = notifResponse?.items || [];
+      const newMovements = newItems.flatMap(movementsOfNotification);
+      setNotifs((prev) => [...prev, ...newItems]);
+      setMovements((prev) => [...prev, ...newMovements]);
+      registerStationMetaFromRecords(newMovements);
+      setPage(nextPage);
+      setHasMore(!!notifResponse?.hasMore);
+    } catch (error) {
+      console.error("[Notifications] load more failed:", error);
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
+  function toggleExpanded(id) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   const movementIndexes = useMemo(() => {
@@ -100,10 +163,6 @@ export default function Notifications() {
   }, [movements]);
 
   const options = useMemo(() => {
-    const divisions = new Set();
-    const states = new Set();
-    const districts = new Set();
-    const stations = new Map();
     const commodities = new Map();
     const rakeCmdts = new Map();
 
@@ -113,18 +172,8 @@ export default function Notifications() {
         : movements.filter((movement) => filters.commodities.includes(getCommodityCode(movement)));
 
     movements.forEach((movement) => {
-      if (movement.division) divisions.add(movement.division);
-      for (const station of [movement.station_from, movement.station_to]) {
-        if (!station) continue;
-        stations.set(station, formatStationNameAndCode(station));
-        const meta = getStationMeta(station);
-        if (meta?.state) states.add(meta.state);
-        if (meta?.district) districts.add(meta.district);
-      }
-
       const commodity = getCommodityCode(movement);
       if (commodity) commodities.set(commodity, getCommodityDisplay(movement));
-
     });
 
     commodityScoped.forEach((movement) => {
@@ -133,18 +182,15 @@ export default function Notifications() {
     });
 
     return {
-      divisions: [...divisions].sort().map((division) => ({
-        value: division,
-        label: `${getDivisionName(division)} (${division})`,
-        searchText: `${division} ${getDivisionName(division)}`,
-      })),
-      states: [...states].sort(),
-      districts: [...districts].sort(),
-      stations: mapOptions(stations),
+      zones: scoped.zones,
+      divisions: scoped.divisions,
+      states: scoped.states,
+      districts: scoped.districts,
+      stations: scoped.stations,
       commodities: mapOptions(commodities),
       rakeCmdts: mapOptions(rakeCmdts),
     };
-  }, [filters.commodities, movements]);
+  }, [filters.commodities, movements, scoped]);
 
   const filtered = useMemo(() => {
     return notifs.filter((notification) => {
@@ -152,6 +198,10 @@ export default function Notifications() {
       if (isOutwardType(notification.type) && !filters.showOutward) return false;
 
       if (!optionMatches(filters.divisions, notification.related_division || "")) {
+        return false;
+      }
+
+      if (!optionMatches(filters.zones, divisionZoneCode[notification.related_division] || "")) {
         return false;
       }
 
@@ -169,12 +219,13 @@ export default function Notifications() {
 
       return relatedMovements.some((movement) => movementMatchesFilters(movement, filters));
     });
-  }, [filters, movementIndexes, notifs]);
+  }, [filters, movementIndexes, notifs, divisionZoneCode]);
 
   const unreadCount = notifs.filter((notification) => !notification.is_read).length;
   const hasActiveFilters =
     filters.showInward !== true ||
     filters.showOutward !== true ||
+    filters.zones.length > 0 ||
     filters.divisions.length > 0 ||
     filters.states.length > 0 ||
     filters.districts.length > 0 ||
@@ -190,6 +241,7 @@ export default function Notifications() {
     setFilters({
       showInward: nextFilters.showInward ?? true,
       showOutward: nextFilters.showOutward ?? true,
+      zones: normalizeMultiValue(nextFilters.zones ?? nextFilters.filterZone),
       divisions: normalizeMultiValue(nextFilters.divisions ?? nextFilters.filterDivision),
       states: normalizeMultiValue(nextFilters.states),
       districts: normalizeMultiValue(nextFilters.districts),
@@ -277,9 +329,10 @@ export default function Notifications() {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <MultiSelectFilter label="Division" selected={filters.divisions} onChange={(value) => setFilter("divisions", value)} options={options.divisions} placeholder="All Divisions" />
-          <MultiSelectFilter label="State" selected={filters.states} onChange={(value) => setFilter("states", value)} options={options.states} placeholder="All States" />
-          <MultiSelectFilter label="District" selected={filters.districts} onChange={(value) => setFilter("districts", value)} options={options.districts} placeholder="All Districts" />
+          <MultiSelectFilter label="Zone" selected={filters.zones} onChange={(value) => setFilters((prev) => ({ ...prev, zones: value, divisions: [], stations: [] }))} options={options.zones} placeholder="All Zones" />
+          <MultiSelectFilter label="Division" selected={filters.divisions} onChange={(value) => setFilters((prev) => ({ ...prev, divisions: value, stations: [] }))} options={options.divisions} placeholder="All Divisions" />
+          <MultiSelectFilter label="State" selected={filters.states} onChange={(value) => setFilters((prev) => ({ ...prev, states: value, districts: [], stations: [] }))} options={options.states} placeholder="All States" />
+          <MultiSelectFilter label="District" selected={filters.districts} onChange={(value) => setFilters((prev) => ({ ...prev, districts: value, stations: [] }))} options={options.districts} placeholder="All Districts" />
           <MultiSelectFilter label="Station" selected={filters.stations} onChange={(value) => setFilter("stations", value)} options={options.stations} placeholder="All Stations" />
           <MultiSelectFilter
             label="Commodity"
@@ -381,6 +434,8 @@ export default function Notifications() {
           filtered.map((notification) => {
             const config = TYPE_CONFIG[notification.type] || TYPE_CONFIG.Inward;
             const IconComp = config.icon;
+            const relatedRakes = movementsOfNotification(notification);
+            const isExpanded = expanded.has(notification.id);
             return (
               <div
                 key={notification.id}
@@ -428,7 +483,33 @@ export default function Notifications() {
                         {new Date(notification.created_date).toLocaleString("en-IN")}
                       </span>
                     )}
+                    {relatedRakes.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleExpanded(notification.id);
+                        }}
+                        className="text-xs font-medium text-primary hover:underline"
+                      >
+                        {isExpanded ? "Hide" : `View ${relatedRakes.length} rakes`}
+                      </button>
+                    )}
                   </div>
+                  {isExpanded && relatedRakes.length > 1 && (
+                    <div className="mt-3 space-y-1 rounded-lg border border-border bg-muted/30 p-2">
+                      {relatedRakes.map((rake, index) => (
+                        <div
+                          key={rake.id || rake.odr_number || index}
+                          className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
+                        >
+                          <span className="font-mono text-foreground">{rake.odr_number || "-"}</span>
+                          <span>{rake.commodity_name || rake.commodity_code || rake.commodity || "-"}</span>
+                          <span>{rake.company_name || rake.company || rake.company_code || "-"}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <button
                   type="button"
@@ -445,6 +526,19 @@ export default function Notifications() {
           })
         )}
       </div>
+
+      {!loading && hasMore && (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="rounded-lg border border-border bg-muted px-4 py-2 text-xs text-foreground hover:bg-muted/80 disabled:opacity-50"
+          >
+            {loadingMore ? "Loading..." : "Load More Notifications"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

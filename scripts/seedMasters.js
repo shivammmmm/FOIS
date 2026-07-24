@@ -823,108 +823,104 @@ const INDIA_DATA = [
 ];
 
 
+function toCode(text) {
+  return String(text || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+async function upsertGenericMaster(client, table, { code, name, parentCode }) {
+  const normalizedCode = toCode(code);
+  if (!normalizedCode) return;
+  await client.query(
+    `INSERT INTO ${table} (id, code, name, parent_code, active, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, TRUE, NOW(), NOW())
+     ON CONFLICT (code) DO UPDATE SET
+       name = EXCLUDED.name,
+       parent_code = EXCLUDED.parent_code,
+       active = TRUE,
+       updated_at = NOW()`,
+    [`${table}_${normalizedCode}`, normalizedCode, name || normalizedCode, parentCode || null]
+  );
+}
+
+// Real schema (see server/utils/masterCatalogMigration.js `ensureGenericMasterTable`) is
+// id/code/name/parent_code/active — not the state_id/state_code/state/stateId columns this
+// seeder used to guess at. Upsert directly against that schema instead of bruteforcing columns.
 export async function runSeeder(poolInstance) {
   const client = await poolInstance.connect();
   try {
-    console.log("[Seeder Engine] Initiating Bruteforce Fallback Mapping Array...");
-    
-    // 1. Direct Column Exact Extraction
-    const stateSample = await client.query("SELECT * FROM state_master LIMIT 0");
-    const stateCols = stateSample.fields.map(f => f.name);
-    const nameColOfState = stateCols.find(c => c === "state_name" || c === "name") || "name";
-    const codeColOfState = stateCols.find(c => c === "state_code" || c === "code") || "code";
+    console.log("[Seeder] Seeding state_master / district_master...");
 
-    const distSample = await client.query("SELECT * FROM district_master LIMIT 0");
-    const distCols = distSample.fields.map(f => f.name);
-    const nameColOfDist = distCols.find(c => c === "district_name" || c === "name") || "name";
-
-    // 2. Sequential ID Normalization Setup
-    const maxStateRes = await client.query('SELECT id FROM state_master');
-    let nextStateId = 1;
-    if (maxStateRes.rows.length > 0) {
-      const ids = maxStateRes.rows.map(r => parseInt(r.id)).filter(id => !isNaN(id));
-      if (ids.length > 0) nextStateId = Math.max(...ids) + 1;
-    }
-
-    const maxDistRes = await client.query('SELECT id FROM district_master');
-    let nextDistId = 1;
-    if (maxDistRes.rows.length > 0) {
-      const ids = maxDistRes.rows.map(r => parseInt(r.id)).filter(id => !isNaN(id));
-      if (ids.length > 0) nextDistId = Math.max(...ids) + 1;
-    }
-
-    // 3. Execution Main Seed Block
     for (const item of INDIA_DATA) {
-      let stateId;
-      
-      const existingState = await client.query(
-        `SELECT id FROM state_master WHERE "${codeColOfState}" = $1`,
-        [item.state_code.toUpperCase()]
-      );
+      const stateCode = item.state_code.toUpperCase();
+      await upsertGenericMaster(client, "state_master", { code: stateCode, name: item.state_name });
 
-      if (existingState.rows.length > 0) {
-        stateId = existingState.rows[0].id;
-        await client.query(
-          `UPDATE state_master SET "${nameColOfState}" = $1 WHERE id = $2`,
-          [item.state_name, stateId]
-        );
-      } else {
-        stateId = String(nextStateId++);
-        await client.query(
-          `INSERT INTO state_master (id, "${nameColOfState}", "${codeColOfState}") VALUES ($1, $2, $3)`,
-          [stateId, item.state_name, item.state_code.toUpperCase()]
-        );
-        console.log(`[Seeder] Registered State: ${item.state_name} (ID: ${stateId})`);
-      }
-
-      // 4. District Loop with Bruteforce Fallback Array Matrix
       for (const distName of item.districts) {
-        let inserted = false;
-        
-        // Target strategies array list
-        const strategies = [
-          { column: "state_id", value: stateId },
-          { column: "state_code", value: item.state_code.toUpperCase() },
-          { column: "state", value: stateId },
-          { column: "stateId", value: stateId }
-        ];
-
-        for (const strat of strategies) {
-          if (inserted) break;
-          
-          try {
-            // Check existence first
-            const existingDist = await client.query(
-              `SELECT id FROM district_master WHERE "${nameColOfDist}" = $1 AND "${strat.column}" = $2`,
-              [distName, strat.value]
-            );
-
-            if (existingDist.rows.length > 0) {
-              inserted = true;
-              break;
-            }
-
-            // Attempt explicit write command execution
-            const currentDistId = String(nextDistId++);
-            const distQuery = `
-              INSERT INTO district_master (id, "${nameColOfDist}", "${strat.column}") 
-              VALUES ($1, $2, $3)
-            `;
-            await client.query(distQuery, [currentDistId, distName, strat.value]);
-            inserted = true;
-          } catch (e) {
-            // Error code 42703 matches missing column, we let it loop to the next strategy matrix smoothly
-            if (e.code !== "42703") {
-              throw e; // Reroute fatal errors like key violations upwards
-            }
-          }
-        }
+        const districtCode = `${stateCode}_${toCode(distName)}`;
+        await upsertGenericMaster(client, "district_master", {
+          code: districtCode,
+          name: distName,
+          parentCode: stateCode,
+        });
       }
     }
 
-    console.log("[Success Master Check] All Indian states and districts populated successfully via brutal execution pipeline!");
+    console.log("[Seeder] state_master / district_master seeding complete.");
   } catch (error) {
-    console.error("[Seeder Error] Critical pipeline breach during injection sequence:", error);
+    console.error("[Seeder Error] state/district seeding failed:", error);
+  } finally {
+    client.release();
+  }
+}
+
+// -------------------- Indian Railways zones + divisions --------------------
+// Best-effort standard list (17 zones). Division codes are generated from the
+// division name and are not guaranteed to match official IR codes — review/adjust
+// if you have an authoritative reference, since zone/division boundaries do change.
+const ZONE_DIVISION_DATA = [
+  { zone_code: "CR", zone_name: "Central Railway", divisions: ["Mumbai", "Bhusawal", "Nagpur", "Pune", "Solapur"] },
+  { zone_code: "ER", zone_name: "Eastern Railway", divisions: ["Howrah", "Sealdah", "Asansol", "Malda"] },
+  { zone_code: "ECR", zone_name: "East Central Railway", divisions: ["Danapur", "Dhanbad", "Pt. Deen Dayal Upadhyaya", "Samastipur", "Sonpur"] },
+  { zone_code: "ECOR", zone_name: "East Coast Railway", divisions: ["Khurda Road", "Sambalpur", "Waltair"] },
+  { zone_code: "NR", zone_name: "Northern Railway", divisions: ["Delhi", "Ambala", "Ferozpur", "Lucknow", "Moradabad"] },
+  { zone_code: "NCR", zone_name: "North Central Railway", divisions: ["Allahabad", "Agra", "Jhansi"] },
+  { zone_code: "NER", zone_name: "North Eastern Railway", divisions: ["Izzatnagar", "Lucknow", "Varanasi"] },
+  { zone_code: "NFR", zone_name: "Northeast Frontier Railway", divisions: ["Alipurduar", "Katihar", "Lumding", "Rangiya", "Tinsukia"] },
+  { zone_code: "NWR", zone_name: "North Western Railway", divisions: ["Jaipur", "Ajmer", "Bikaner", "Jodhpur"] },
+  { zone_code: "SR", zone_name: "Southern Railway", divisions: ["Chennai", "Madurai", "Palakkad", "Salem", "Thiruvananthapuram", "Tiruchirapalli"] },
+  { zone_code: "SCR", zone_name: "South Central Railway", divisions: ["Secunderabad", "Guntakal", "Guntur", "Hyderabad", "Nanded", "Vijayawada"] },
+  { zone_code: "SER", zone_name: "South Eastern Railway", divisions: ["Adra", "Chakradharpur", "Kharagpur", "Ranchi"] },
+  { zone_code: "SECR", zone_name: "South East Central Railway", divisions: ["Bilaspur", "Nagpur", "Raipur"] },
+  { zone_code: "SWR", zone_name: "South Western Railway", divisions: ["Hubballi", "Bengaluru", "Mysuru"] },
+  { zone_code: "WR", zone_name: "Western Railway", divisions: ["Mumbai Central", "Ahmedabad", "Rajkot", "Bhavnagar", "Vadodara", "Ratlam"] },
+  { zone_code: "WCR", zone_name: "West Central Railway", divisions: ["Jabalpur", "Bhopal", "Kota"] },
+  { zone_code: "KR", zone_name: "Metro Railway Kolkata", divisions: [] },
+];
+
+export async function runZoneDivisionSeeder(poolInstance) {
+  const client = await poolInstance.connect();
+  try {
+    console.log("[Seeder] Seeding zone_master / division_master...");
+
+    for (const zone of ZONE_DIVISION_DATA) {
+      await upsertGenericMaster(client, "zone_master", { code: zone.zone_code, name: zone.zone_name });
+
+      for (const divisionName of zone.divisions) {
+        const divisionCode = `${zone.zone_code}_${toCode(divisionName)}`;
+        await upsertGenericMaster(client, "division_master", {
+          code: divisionCode,
+          name: divisionName,
+          parentCode: zone.zone_code,
+        });
+      }
+    }
+
+    console.log("[Seeder] zone_master / division_master seeding complete.");
+  } catch (error) {
+    console.error("[Seeder Error] zone/division seeding failed:", error);
   } finally {
     client.release();
   }

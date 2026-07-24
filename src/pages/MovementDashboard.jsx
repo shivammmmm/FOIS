@@ -24,19 +24,21 @@ import { getCommodityColor } from "@/utils/railwayDictionary";
 import { formatStationNameAndCode } from "@/utils/stationMaster";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
 import { buildFilterHierarchyOptions } from "@/utils/filterHierarchy";
+import { useMasterHierarchy } from "@/utils/masterHierarchy";
 
 export default function MovementDashboard({ direction = "Inward" }) {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [hierarchy, setHierarchy] = useState(null);
-  const [filters, setFilters] = useState({ zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] });
+  const { getDivisionName } = useMasterHierarchy();
+  const [filters, setFilters] = useState({ zone: [], division: [], state: [], district: [], station: [], commodity: [], company: [] });
   const isInward = direction === "Inward";
   const Icon = isInward ? ArrowDownToLine : ArrowUpFromLine;
   const accent = isInward ? "text-emerald-500" : "text-blue-500";
   const barColor = isInward ? "#10B981" : "#3B82F6";
 
-  useEffect(() => { base44.filterHierarchy().then(setHierarchy).catch(() => undefined); }, []);
+  useEffect(() => { base44.filterHierarchy(direction).then(setHierarchy).catch(() => undefined); }, [direction]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -57,17 +59,18 @@ export default function MovementDashboard({ direction = "Inward" }) {
     return () => controller.abort();
   }, [direction, filters]);
 
-  const sourceOptions = summary?.options || { zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] };
-  const scoped = buildFilterHierarchyOptions(hierarchy || {}, { state: filters.state, district: filters.district, commodity: filters.commodity });
+  const sourceOptions = summary?.options || { zone: [], division: [], state: [], district: [], station: [], commodity: [], company: [] };
+  const scoped = buildFilterHierarchyOptions(hierarchy || {}, { zone: filters.zone, division: filters.division, state: filters.state, district: filters.district, commodity: filters.commodity });
   const preferHierarchy = (hierarchyOptions, fallbackOptions) =>
     hierarchyOptions?.length ? hierarchyOptions : (fallbackOptions || []);
   const options = {
     ...sourceOptions,
+    zone: preferHierarchy(scoped.zones, sourceOptions.zone),
+    division: preferHierarchy(scoped.divisions, sourceOptions.division),
     state: preferHierarchy(scoped.states, sourceOptions.state),
     district: preferHierarchy(scoped.districts, sourceOptions.district),
     station: preferHierarchy(scoped.stations, sourceOptions.station),
     commodity: preferHierarchy(scoped.commodities, sourceOptions.commodity),
-    rake: preferHierarchy(scoped.rakeCmdts, sourceOptions.rake),
   };
   const unmappedCommodities = (hierarchy?.commodities || []).filter((item) => item.mapped === false);
   const stats = summary || { pending: "—", arrived: "—", departed: "—", delayed: "—", commodityData: [], divisionData: [], stationData: [], trendData: [] };
@@ -101,12 +104,12 @@ export default function MovementDashboard({ direction = "Inward" }) {
       </div>
 
       <div className="flex flex-wrap gap-2 rounded-xl border border-border bg-card p-3">
-        {[["zone","Zone"],["division","Division"],["state","State"],["district","District"],["station","Station"],["commodity","Commodity"],["rake","Rake CMDT"],["company","Company"]].map(([key, label]) => {
-          const isCoreHierarchyFilter = ["state", "district", "station", "commodity", "rake"].includes(key);
+        {[["zone","Zone"],["division","Division"],["state","State"],["district","District"],["station","Station"],["commodity","Commodity"],["company","Company"]].map(([key, label]) => {
+          const isCoreHierarchyFilter = ["state", "district", "station", "commodity"].includes(key);
           if (!isCoreHierarchyFilter && !options[key]?.length) return null;
-          return <MultiSelectFilter key={key} label={label} selected={filters[key]} options={options[key] || []} disabled={(key === "district" && !filters.state.length) || (key === "station" && !filters.district.length) || (key === "rake" && !filters.commodity.length)} placeholder={key === "district" && !filters.state.length ? "Select State first" : key === "station" && !filters.district.length ? "Select District first" : key === "rake" && !filters.commodity.length ? "Select Commodity first" : `All ${label}`} onChange={(value) => setFilters((prev) => key === 'state' ? { ...prev, state: value, district: [], station: [] } : key === 'district' ? { ...prev, district: value, station: [] } : key === 'commodity' ? { ...prev, commodity: value, rake: [] } : { ...prev, [key]: value })} />;
+          return <MultiSelectFilter key={key} label={label} selected={filters[key]} options={options[key] || []} disabled={key === "district" && !filters.state.length} placeholder={key === "district" && !filters.state.length ? "Select State first" : `All ${label}`} onChange={(value) => setFilters((prev) => key === 'zone' ? { ...prev, zone: value, division: [], station: [] } : key === 'division' ? { ...prev, division: value, station: [] } : key === 'state' ? { ...prev, state: value, district: [], station: [] } : key === 'district' ? { ...prev, district: value, station: [] } : { ...prev, [key]: value })} />;
         })}
-        <button type="button" onClick={() => setFilters({ zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] })} className="rounded-lg border border-border px-3 py-2 text-xs">Clear Filters</button>
+        <button type="button" onClick={() => setFilters({ zone: [], division: [], state: [], district: [], station: [], commodity: [], company: [] })} className="rounded-lg border border-border px-3 py-2 text-xs">Clear Filters</button>
       </div>
 
       {loadError && (
@@ -137,7 +140,7 @@ export default function MovementDashboard({ direction = "Inward" }) {
           <HorizontalBarChart data={stats.commodityData} colorByCommodity fallbackColor={barColor} />
         </ChartPanel>
         <ChartPanel title={`${direction} by Division`}>
-          <VerticalBarChart data={stats.divisionData} fill={barColor} />
+          <VerticalBarChart data={(stats.divisionData || []).map((row) => ({ ...row, name: getDivisionName(row.name) }))} fill={barColor} />
         </ChartPanel>
         <ChartPanel title={`${direction} by Station`}>
           <HorizontalBarChart data={stats.stationData} fallbackColor={barColor} />

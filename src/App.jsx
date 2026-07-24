@@ -33,6 +33,7 @@ const Signup = React.lazy(() => import("@/pages/Signup"));
 const UserManagement = React.lazy(() => import("@/pages/UserManagement"));
 const NotificationPreferences = React.lazy(() => import("@/pages/NotificationPreferences"));
 const MasterManagement = React.lazy(() => import("@/pages/MasterManagement.jsx"));
+const UnmappedCodes = React.lazy(() => import("@/pages/UnmappedCodes.jsx"));
 
 const ADMIN_ROLES = ["super_admin", "admin"];
 const USER_ROLES = ["user"];
@@ -199,6 +200,7 @@ const AuthenticatedApp = () => {
             {/* ⚙️ CORE LOCK: Master Management successfully mapped inside secure layout route */}
             <Route path="/admin/master-management" element={<Navigate to="/admin/master-management/state" replace />} />
             <Route path="/admin/master-management/:masterKey" element={<MasterManagement />} />
+            <Route path="/admin/unmapped-codes" element={<UnmappedCodes />} />
 
             <Route path="/admin/users" element={<UserManagement />} />
             <Route path="/admin/settings" element={<Settings />} />

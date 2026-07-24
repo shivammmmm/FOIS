@@ -1,16 +1,9 @@
-import { STATION_MASTER_OVERRIDES } from '@/data/stationMasterOverrides';
-import { STATION_NAMES } from './railwayDictionary';
-
 const normalizeCode = (code) => String(code || '').trim().toUpperCase();
 
-const LEGACY_STATION_MASTER = Object.fromEntries(
-  Object.entries(STATION_NAMES).map(([code, name]) => [code, { code, name }])
-);
-
-export const STATION_MASTER = {
-  ...LEGACY_STATION_MASTER,
-  ...STATION_MASTER_OVERRIDES,
-};
+// Populated at runtime from records fetched from the database (see
+// registerStationMetaFromRecords). No hardcoded station data lives here —
+// unmapped codes fall back to showing the raw code itself.
+export const STATION_MASTER = {};
 
 export function registerStationMetaFromRecords(records = []) {
   for (const record of Array.isArray(records) ? records : []) {

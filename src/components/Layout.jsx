@@ -3,6 +3,7 @@ import { Link, useLocation, Outlet, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import {
   Train,
+  AlertTriangle,
   ArrowDownToLine,
   ArrowUpFromLine,
   BarChart3,
@@ -26,6 +27,7 @@ import {
 import GlobalSearch from "./GlobalSearch";
 import NotificationBell from "./NotificationBell";
 import { useAuth } from "@/lib/AuthContext";
+import { loadMasterHierarchy } from "@/utils/masterHierarchy";
 
 const masterSubItems = [
   { path: "/admin/master-management/state", label: "State Master", icon: MapPinned },
@@ -36,6 +38,7 @@ const masterSubItems = [
   { path: "/admin/master-management/commodity", label: "Commodity Master", icon: Package },
   { path: "/admin/master-management/company", label: "Company Master", icon: Building2 },
   { path: "/admin/master-management/product", label: "Product Master", icon: Boxes },
+  { path: "/admin/unmapped-codes", label: "Unmapped Codes", icon: AlertTriangle },
 ];
 
 // ⚙️ ADMINISTRATIVE NAVIGATION MATRIX (ADMIN SCALED ONLY)
@@ -80,10 +83,17 @@ export default function Layout() {
   const navItems = isAdmin ? adminNavItems : userNavItems;
 
   useEffect(() => {
-    if (location.pathname.startsWith("/admin/master-management")) {
+    if (
+      location.pathname.startsWith("/admin/master-management") ||
+      location.pathname.startsWith("/admin/unmapped-codes")
+    ) {
       setMasterMenuOpen(true);
     }
   }, [location.pathname]);
+
+  useEffect(() => {
+    loadMasterHierarchy();
+  }, []);
 
   useEffect(() => {
     if (!profileOpen) return undefined;

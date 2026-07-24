@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Search, Train, X } from "lucide-react";
 import { base44 } from "@/api/base44Client";
 import { getCommodityName } from "@/utils/railwayDictionary";
+import { useMasterHierarchy } from "@/utils/masterHierarchy";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/AuthContext";
 
@@ -17,6 +18,7 @@ export default function GlobalSearch() {
   const ref = useRef(null);
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { getDivisionName } = useMasterHierarchy();
   const isAdmin = user?.role === "super_admin" || user?.role === "admin";
 
   useEffect(() => {
@@ -139,7 +141,7 @@ export default function GlobalSearch() {
                   {r.odr_number} — {r.station_from} → {r.station_to}
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  {r.division} · {getCommodityName(r.commodity)} ·{" "}
+                  {getDivisionName(r.division)} · {getCommodityName(r.commodity)} ·{" "}
                   {r.rake_commodity_code || r.rake_cmdt || ""}
                 </div>
               </div>
