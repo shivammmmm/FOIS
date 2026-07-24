@@ -21,6 +21,7 @@ import {
   Legend,
 } from "recharts";
 import { getCommodityColor, getCommodityName } from "@/utils/railwayDictionary";
+import { useMasterHierarchy } from "@/utils/masterHierarchy";
 import { useAuth } from "@/lib/AuthContext";
 
 const COMMODITY_MAP = {
@@ -33,6 +34,7 @@ const COMMODITY_MAP = {
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const { divisions: divisionMasterMap, getDivisionName } = useMasterHierarchy();
   const [movements, setMovements] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -200,10 +202,10 @@ export default function Dashboard() {
       divisionMap[m.division] = (divisionMap[m.division] || 0) + 1;
     });
     return Object.entries(divisionMap)
-      .map(([name, count]) => ({ name, count }))
+      .map(([code, count]) => ({ name: getDivisionName(code), count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 6);
-  }, [movements]);
+  }, [movements, divisionMasterMap]);
 
   const pieData = useMemo(() => {
     const inwardCommodities = {};
@@ -293,9 +295,9 @@ export default function Dashboard() {
               onChange={(e) => setFilterDivision(e.target.value)}
             >
               <option value="All">All Divisions</option>
-              {["BPL", "JBP", "KOTA", "BCT", "BRC", "RTM", "ADI"].map((d) => (
+              {Object.keys(divisionMasterMap).sort().map((d) => (
                 <option key={d} value={d}>
-                  {d}
+                  {getDivisionName(d)}
                 </option>
               ))}
             </select>

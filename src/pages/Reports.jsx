@@ -6,6 +6,7 @@ import { getCommodityName } from '@/utils/railwayDictionary';
 import StatusBadge from '@/components/StatusBadge';
 import { useAuth } from '@/lib/AuthContext';
 import FreightDetailsModal from '@/components/FreightDetailsModal';
+import { useMasterHierarchy } from '@/utils/masterHierarchy';
 
 const REPORT_TYPES = [
   { id: 'inward', label: '🚆 Inward Report', desc: 'All inward freight movements' },
@@ -18,6 +19,7 @@ const REPORT_TYPES = [
 
 export default function Reports() {
   const { user } = useAuth();
+  const { getZoneForDivision, getDivisionName } = useMasterHierarchy();
   const [movements, setMovements] = useState([]);
   const [savedFilters, setSavedFilters] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -76,10 +78,12 @@ export default function Reports() {
   const exportExcel = () => {
     setExporting(true);
     try {
-      const rows = isDivisionReport ? reportData : reportData.map(r => ({
+      const rows = isDivisionReport
+        ? reportData.map(row => ({ ...row, division: getDivisionName(row.division) }))
+        : reportData.map(r => ({
         'ODR Number': r.odr_number || '',
-        'Zone': r.zone || '',
-        'Division': r.division || '',
+        'Zone': getZoneForDivision(r.division) || '',
+        'Division': r.division ? getDivisionName(r.division) : '',
         'From Station': r.station_from || '',
         'To Station': r.station_to || '',
         'Commodity': getCommodityName(r.commodity) || '',
@@ -170,7 +174,7 @@ export default function Reports() {
         </div>
         <select value={filterDivision} onChange={e => setFilterDivision(e.target.value)}
           className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-1.5 outline-none">
-          {divisions.map(d => <option key={d} value={d}>{d === 'All' ? 'All Divisions' : d}</option>)}
+          {divisions.map(d => <option key={d} value={d}>{d === 'All' ? 'All Divisions' : getDivisionName(d)}</option>)}
         </select>
         <select value={filterCommodity} onChange={e => setFilterCommodity(e.target.value)}
           className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-1.5 outline-none">
@@ -226,7 +230,7 @@ export default function Reports() {
               ) : isDivisionReport ? (
                 reportData.map((row, i) => (
                   <tr key={i} className="border-b border-border/50 hover:bg-muted/30">
-                    <td className="px-4 py-3 font-semibold text-foreground">{row.division}</td>
+                    <td className="px-4 py-3 font-semibold text-foreground">{getDivisionName(row.division)}</td>
                     <td className="px-4 py-3 text-center font-bold text-primary">{row.total}</td>
                     <td className="px-4 py-3 text-center text-emerald-400 font-medium">{row.inward}</td>
                     <td className="px-4 py-3 text-center text-blue-400 font-medium">{row.outward}</td>
@@ -239,8 +243,8 @@ export default function Reports() {
                     <td className="px-4 py-3 font-mono text-xs text-primary font-medium">
                       {r.odr_number}{r.is_duplicate && <span className="ml-1 text-orange-400 text-[10px]">⚠ DUP</span>}
                     </td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{r.zone || '—'}</td>
-                    <td className="px-4 py-3 text-foreground">{r.division || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">{getZoneForDivision(r.division) || '—'}</td>
+                    <td className="px-4 py-3 text-foreground">{r.division ? getDivisionName(r.division) : '—'}</td>
                     <td className="px-4 py-3 text-xs whitespace-nowrap">
                       <span className="bg-muted px-1.5 py-0.5 rounded">{r.station_from || '?'}</span>
                       <span className="mx-1 text-muted-foreground">→</span>

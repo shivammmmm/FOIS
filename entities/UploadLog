@@ -18,6 +18,9 @@
         "MaturedIndent"
       ]
     },
+    "file_hash": {
+      "type": "string"
+    },
     "uploaded_by": {
       "type": "string"
     },
