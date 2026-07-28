@@ -185,10 +185,10 @@ export default function OutwardMonitor() {
             options={options.commodities}
             placeholder="All Commodities"
           />
-          <MultiSelectFilter label="Rake CMDT" selected={filters.rakeCmdts} onChange={(value) => {
+          <MultiSelectFilter label="Rake Commodity" selected={filters.rakeCmdts} onChange={(value) => {
             setFilters((prev) => ({ ...prev, rakeCmdts: value }));
             resetPage();
-          }} options={options.rakeCmdts} placeholder="All Rake CMDT" />
+          }} options={scoped.rakeCmdts.length ? scoped.rakeCmdts : options.rakeCmdts} placeholder="All Rake Commodities" />
 
           {savedFilters.length > 0 && (
             <select
@@ -270,7 +270,7 @@ export default function OutwardMonitor() {
                   "State (Source)",
                   "Company",
                   "Product",
-                  "Rake CMDT",
+                  "Rake Commodity (Rake CMDT)",
                   "Wagons",
                   "Destination Station",
                   "Departure Date",

@@ -54,12 +54,12 @@ async function group(where, params, expression, limit) {
 
 export async function movementDashboardSummary(input) {
   const ctx = queryContext(input);
-  const cacheKey = `movement:dashboard:v1:${JSON.stringify(input)}`;
+  const cacheKey = `movement:dashboard:v2:${JSON.stringify(input)}`;
   return cachedJson(cacheKey, Number(process.env.DASHBOARD_CACHE_TTL_SECONDS || 120), async () => {
     const trendExpression = ctx.inward
       ? "COALESCE(NULLIF(arrival_date, ''), data->>'arrival_date')"
       : "COALESCE(NULLIF(departure_date, ''), data->>'departure_date')";
-    const [totals, commodityData, divisionData, stationData, trend, ...facets] = await Promise.all([
+    const [totals, commodityData, rakeCommodityData, divisionData, stationData, trend, ...facets] = await Promise.all([
       pool.query(
         `SELECT COUNT(*)::int AS total,
           COUNT(*) FILTER (WHERE ${fieldSql.status} IN ('Pending','In Transit'))::int AS pending,
@@ -70,6 +70,7 @@ export async function movementDashboardSummary(input) {
         ctx.params
       ),
       group(ctx.where, ctx.params, ctx.expressions.commodity, 10),
+      group(ctx.where, ctx.params, ctx.expressions.rake, 10),
       group(ctx.where, ctx.params, ctx.expressions.division, 8),
       group(ctx.where, ctx.params, ctx.expressions.station, 10),
       pool.query(
@@ -83,7 +84,7 @@ export async function movementDashboardSummary(input) {
     ]);
     const facetKeys = Object.keys(ctx.expressions);
     const options = Object.fromEntries(facetKeys.map((key, index) => [key, facets[index].rows.map((row) => row.value)]));
-    return { ...totals.rows[0], commodityData, divisionData, stationData, trendData: trend.rows.reverse(), options };
+    return { ...totals.rows[0], commodityData, rakeCommodityData, divisionData, stationData, trendData: trend.rows.reverse(), options };
   });
 }
 
@@ -230,7 +231,7 @@ export async function filterHierarchy(direction) {
         : `SELECT station_from AS code FROM freight_movements WHERE station_from IS NOT NULL AND station_from <> ''
            UNION
            SELECT station_to AS code FROM freight_movements WHERE station_to IS NOT NULL AND station_to <> ''`;
-  const cacheKey = `movement:filter-hierarchy:v5:${direction || "all"}`;
+  const cacheKey = `movement:filter-hierarchy:v6:${direction || "all"}`;
   return cachedJson(cacheKey, 300, async () => {
     const [states, districts, stations, pairs, masters, zones, divisions, rawStations] = await Promise.all([
       pool.query("SELECT code, name FROM state_master WHERE active IS DISTINCT FROM FALSE ORDER BY name, code"),
@@ -263,10 +264,12 @@ export async function filterHierarchy(direction) {
       code: row.code, name: row.name, parentCode: row.parent_code, mapped: true,
     }));
 
-    const stationMasterSet = new Set(stations.rows.map((row) => row.code));
-    const extraStationCodes = rawStations.rows.map((row) => row.code).filter((code) => code && !stationMasterSet.has(code));
+    const observedStationSet = new Set(rawStations.rows.map((row) => row.code).filter(Boolean));
+    const directionStations = stations.rows.filter((row) => observedStationSet.has(row.code));
+    const stationMasterSet = new Set(directionStations.map((row) => row.code));
+    const extraStationCodes = [...observedStationSet].filter((code) => !stationMasterSet.has(code));
     const stationsOut = [
-      ...stations.rows.map((row) => ({ ...row, mapped: true })),
+      ...directionStations.map((row) => ({ ...row, mapped: true })),
       ...extraStationCodes.map((code) => ({ code, name: code, state: null, district: null, division: null, mapped: false })),
     ];
 
@@ -285,14 +288,33 @@ export async function filterHierarchy(direction) {
 // Codes seen in uploaded data with no matching master record — surfaced to
 // admins so they know exactly what to add next when building out the masters.
 export async function unmappedSummary() {
-  return cachedJson("movement:unmapped-summary:v1", 120, async () => {
+  return cachedJson("movement:unmapped-summary:v4", 120, async () => {
     const [stations, commodities] = await Promise.all([
       pool.query(
-        `SELECT station_code AS code, occurrence_count, first_seen_at, last_seen_at
-         FROM unmapped_station_codes
-         WHERE status = 'unmapped'
+        `WITH observed AS (
+           SELECT station_from AS code, created_date AS seen_at
+           FROM freight_movements
+           WHERE station_from IS NOT NULL AND station_from <> ''
+           UNION ALL
+           SELECT station_to AS code, created_date AS seen_at
+           FROM freight_movements
+           WHERE station_to IS NOT NULL AND station_to <> ''
+         )
+         SELECT observed.code,
+                COUNT(*)::int AS occurrence_count,
+                MIN(observed.seen_at) AS first_seen_at,
+                MAX(observed.seen_at) AS last_seen_at
+         FROM observed
+         WHERE observed.code ~ '^[A-Z0-9]{1,6}$'
+           AND NOT EXISTS (
+           SELECT 1
+           FROM station_master sm
+           WHERE sm.station_code = observed.code
+             AND sm.is_active IS DISTINCT FROM FALSE
+         )
+         GROUP BY observed.code
          ORDER BY occurrence_count DESC
-         LIMIT 500`
+         LIMIT 5000`
       ),
       pool.query(
         `WITH codes AS (

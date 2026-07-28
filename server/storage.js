@@ -1316,7 +1316,7 @@ export async function markAllNotificationsRead(userId) {
     const db = await readDb();
     let updated = 0;
     db.RailNotification = (db.RailNotification || []).map((item) => {
-      if (!["inward", "outward"].includes(String(item.type || "").toLowerCase())) return item;
+      if (!["inward", "outward", "adminreview"].includes(String(item.type || "").toLowerCase())) return item;
       const readBy = Array.isArray(item.read_by) ? item.read_by : [];
       if (readBy.includes(normalizedUserId)) return item;
       updated += 1;
@@ -1329,7 +1329,7 @@ export async function markAllNotificationsRead(userId) {
     `UPDATE rail_notifications
      SET data = jsonb_set(data, '{read_by}', COALESCE(data->'read_by', '[]'::jsonb) || to_jsonb(ARRAY[$1]::text[]), true),
          updated_date = NOW()
-     WHERE LOWER(data->>'type') IN ('inward', 'outward')
+     WHERE LOWER(data->>'type') IN ('inward', 'outward', 'adminreview')
        AND NOT COALESCE(data->'read_by', '[]'::jsonb) @> to_jsonb(ARRAY[$1]::text[])`,
     [normalizedUserId]
   );

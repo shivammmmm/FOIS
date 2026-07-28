@@ -12,6 +12,7 @@ async function request(path, options = {}) {
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...fetchOptions,
+    ...(path.includes("/api/admin/comparison") ? { cache: "no-store" } : {}),
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -21,9 +22,11 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const contentType = response.headers.get("content-type") || "";
-    const details = contentType.includes("application/json")
-      ? await response.json().catch(() => ({}))
-      : { error: await response.text().catch(() => "") };
+    const isJson = contentType.includes("application/json");
+    const details = isJson ? await response.json().catch(() => ({})) : {};
+    if (!isJson && path.includes("/api/admin/comparison")) {
+      details.error = "Comparison API is unavailable. Please restart the backend or verify the comparison routes.";
+    }
     const error = new Error(details.error || `Request failed: ${response.status}`);
     error.status = response.status;
     throw error;
@@ -310,6 +313,14 @@ export const apiClient = {
     uploads: {
       excel: async ({ fileName, fileType, file }) => {
         const token = getToken();
+        if (!window.crypto?.subtle) {
+          throw new Error("Your browser cannot verify duplicate Excel files securely.");
+        }
+        const digest = await window.crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+        const fileHash = Array.from(new Uint8Array(digest), (byte) =>
+          byte.toString(16).padStart(2, "0")
+        ).join("");
+        await request(`/api/admin/uploads/check-duplicate?fileHash=${encodeURIComponent(fileHash)}`);
         const chunkSize = 700 * 1024;
         const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
         const uploadId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -340,6 +351,53 @@ export const apiClient = {
         }),
     },
     storageCounts: () => request("/api/admin/storage/counts"),
+    matching: {
+      summary: () => request("/api/admin/matching/summary"),
+      results: ({ page = 1, limit = 50, status = "", search = "" } = {}) => {
+        const params = new URLSearchParams({ page: String(page), limit: String(limit) });
+        if (status) params.set("status", status);
+        if (search) params.set("search", search);
+        return request(`/api/admin/matching/results?${params}`);
+      },
+      reprocess: () => request("/api/admin/matching/reprocess", { method: "POST" }),
+    },
+    comparison: {
+      summary: () => request("/api/admin/comparison/summary"),
+      records: (filters = {}) => {
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(filters)) if (value !== "" && value != null) params.set(key, String(value));
+        return request(`/api/admin/comparison/records?${params}`);
+      },
+      detail: (id) => request(`/api/admin/comparison/${encodeURIComponent(id)}`),
+      filters: () => request("/api/admin/comparison/options"),
+      analytics: (filters = {}) => request(`/api/admin/comparison/analytics?${new URLSearchParams(filters)}`),
+      runs: () => request("/api/admin/comparison/runs"),
+      rules: () => request("/api/admin/comparison/rules"),
+      saveRules: (payload) => request("/api/admin/comparison/rules", { method: "PUT", body: JSON.stringify(payload || {}) }),
+      reprocess: (payload = {}) => request("/api/admin/comparison/reprocess", { method: "POST", body: JSON.stringify(payload) }),
+      resetManualDecisions: () => request("/api/admin/comparison/reset-manual-decisions", { method: "POST" }),
+      reprocessRecord: (id) => request(`/api/admin/comparison/${encodeURIComponent(id)}/reprocess`, { method: "POST" }),
+      resolve: (id, payload) => request(`/api/admin/comparison/${encodeURIComponent(id)}/resolve`, { method: "POST", body: JSON.stringify(payload || {}) }),
+      unmatch: (id, payload) => request(`/api/admin/comparison/${encodeURIComponent(id)}/unmatch`, { method: "POST", body: JSON.stringify(payload || {}) }),
+      export: (filters = {}) => {
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(filters)) if (value !== "" && value != null) params.set(key, String(value));
+        return request(`/api/admin/comparison/export.xlsx?${params}`, { responseType: "blob" });
+      },
+    },
+  },
+  freightStatus: {
+    summary: (filters = {}) => {
+      const params = new URLSearchParams(filters);
+      return request(`/api/user/freight-status/summary?${params}`);
+    },
+    records: (filters = {}) => {
+      const params = new URLSearchParams(filters);
+      return request(`/api/user/freight-status/records?${params}`);
+    },
+    timeline: (id) => request(`/api/user/freight-status/${encodeURIComponent(id)}/timeline`),
+    analytics: (filters = {}) => request(`/api/user/freight-status/analytics?${new URLSearchParams(filters)}`),
+    export: (filters = {}) => request(`/api/user/freight-status-export.xlsx?${new URLSearchParams(filters)}`, { responseType: "blob" }),
   },
 
   movements: {

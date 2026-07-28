@@ -17,7 +17,6 @@ const CODE_FIELDS = new Set([
   "parent_code",
   "station_code",
   "state",
-  "district",
   "zone",
   "division",
 ]);
@@ -48,8 +47,8 @@ const MASTER_TYPES = [
       { name: "name", label: "District Name", placeholder: "Nagpur" },
     ],
     importMap: {
-      parent_code: ["StateCode"],
-      name: ["DistrictName"],
+      parent_code: ["StateCode", "Parent Code", "ParentCode"],
+      name: ["DistrictName", "Name"],
     },
     validate: (form) => requireFields(form, [
       ["parent_code", "Parent State"],
@@ -364,7 +363,8 @@ export default function MasterManagement() {
       let imported = 0;
       let skipped = 0;
       let failed = 0;
-      for (const record of records) {
+      const failureMessages = [];
+      for (const [recordIndex, record] of records.entries()) {
         const payload = buildPayloadFromImport(record, activeMaster);
         const validation = activeMaster.validate(payload);
         if (validation) {
@@ -375,15 +375,20 @@ export default function MasterManagement() {
         try {
           await apiClient.masterCatalog.create(activeKey, normalizePayload(payload, activeMaster));
           imported += 1;
-        } catch {
+        } catch (error) {
           failed += 1;
+          if (failureMessages.length < 3) {
+            failureMessages.push(
+              `Row ${recordIndex + 2}: ${error?.message || "Import failed"}`
+            );
+          }
         }
       }
 
       await Promise.all([loadRows(), loadReferences()]);
       setMessage({
         kind: failed > 0 ? "warning" : "success",
-        text: `Import finished. Imported: ${imported}, Skipped: ${skipped}, Failed: ${failed}.`,
+        text: `Import finished. Imported: ${imported}, Skipped: ${skipped}, Failed: ${failed}.${failureMessages.length ? ` ${failureMessages.join(" | ")}` : ""}`,
       });
     } catch (error) {
       setMessage({ kind: "error", text: error?.message || "Import failed." });

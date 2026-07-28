@@ -19,6 +19,7 @@ import {
   TrainFront,
   Upload,
   History,
+  GitCompareArrows,
   Settings,
   Menu,
   X,
@@ -51,6 +52,7 @@ const adminNavItems = [
   }, // Fixed & Connected inside Admin Block
   { path: "/admin/upload", label: "Upload Excel", icon: Upload },
   { path: "/admin/upload-history", label: "Upload History", icon: History },
+  { path: "/admin/odr-matured-comparison", label: "ODR–Matured Comparison", icon: GitCompareArrows },
   { path: "/admin/fois-reports", label: "FOIS Reports", icon: Train },
   { path: "/admin/inward-dashboard", label: "Inward Dashboard", icon: BarChart3 },
   { path: "/admin/outward-dashboard", label: "Outward Dashboard", icon: BarChart3 },
@@ -63,6 +65,7 @@ const adminNavItems = [
 
 // 👥 STANDARD USER NAVIGATION MATRIX (CLEAN HOUSEKEEPING)
 const userNavItems = [
+  { path: "/user/freight-status", label: "Freight Status", icon: TrainFront },
   { path: "/fois-reports", label: "FOIS Reports", icon: Train },
   { path: "/inward-monitor", label: "Inward Monitor", icon: ArrowDownToLine },
   { path: "/outward-monitor", label: "Outward Monitor", icon: ArrowUpFromLine },

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
+  AlertTriangle,
   Bell,
   CheckCheck,
   Save,
@@ -12,7 +13,6 @@ import MultiSelectFilter from "@/components/MultiSelectFilter";
 import { useAuth } from "@/lib/AuthContext";
 import {
   getBusinessRakeCmdtCode as getRakeCmdtCode,
-  getBusinessRakeCmdtDisplay as getRakeCmdtDisplay,
 } from "@/utils/freightRecordFilters";
 import { formatStationNameAndCode, getStationMeta, registerStationMetaFromRecords } from "@/utils/stationMaster";
 import { useMasterHierarchy } from "@/utils/masterHierarchy";
@@ -27,13 +27,14 @@ import {
 
 const FILTER_SOURCE = "notifications";
 const SAVED_SOURCE = "Notifications";
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 500;
 
 const TYPE_CONFIG = {
   Arrival: { icon: ArrowDownToLine, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "Arrival" },
   Departure: { icon: ArrowUpFromLine, color: "text-blue-400", bg: "bg-blue-500/10", label: "Departure" },
   Inward: { icon: ArrowDownToLine, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "Inward" },
   Outward: { icon: ArrowUpFromLine, color: "text-blue-400", bg: "bg-blue-500/10", label: "Outward" },
+  AdminReview: { icon: AlertTriangle, color: "text-amber-500", bg: "bg-amber-500/10", label: "Manual Review" },
 };
 
 const INWARD_TYPES = ["Inward", "Arrival"];
@@ -54,6 +55,7 @@ const DEFAULT_FILTERS = {
 export default function Notifications() {
   const { user } = useAuth();
   const didLoadPersisted = useRef(false);
+  const saveFilterInFlight = useRef(false);
   const [notifs, setNotifs] = useState([]);
   const [movements, setMovements] = useState([]);
   const [savedFilters, setSavedFilters] = useState([]);
@@ -64,6 +66,9 @@ export default function Notifications() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [expanded, setExpanded] = useState(new Set());
   const [hierarchy, setHierarchy] = useState(null);
+  const [savingFilter, setSavingFilter] = useState(false);
+  const [filterSaveNotice, setFilterSaveNotice] = useState(null);
+  const [appliedSavedFilterId, setAppliedSavedFilterId] = useState("");
   const { getDivisionName } = useMasterHierarchy();
 
   const divisionZoneCode = useMemo(
@@ -115,7 +120,11 @@ export default function Notifications() {
       setPage(1);
       setHasMore(!!notifResponse?.hasMore);
       registerStationMetaFromRecords(movData);
-      setSavedFilters((savedRows || []).filter((row) => row.source === SAVED_SOURCE));
+      setSavedFilters(
+        dedupeSavedFilters(
+          (savedRows || []).filter((row) => row.source === SAVED_SOURCE)
+        )
+      );
     } catch (error) {
       console.error("[Notifications] load failed:", error);
     } finally {
@@ -163,34 +172,16 @@ export default function Notifications() {
   }, [movements]);
 
   const options = useMemo(() => {
-    const commodities = new Map();
-    const rakeCmdts = new Map();
-
-    const commodityScoped =
-      filters.commodities.length === 0
-        ? movements
-        : movements.filter((movement) => filters.commodities.includes(getCommodityCode(movement)));
-
-    movements.forEach((movement) => {
-      const commodity = getCommodityCode(movement);
-      if (commodity) commodities.set(commodity, getCommodityDisplay(movement));
-    });
-
-    commodityScoped.forEach((movement) => {
-      const rakeCmdt = getRakeCmdtCode(movement);
-      if (rakeCmdt) rakeCmdts.set(rakeCmdt, getRakeCmdtDisplay(movement));
-    });
-
     return {
       zones: scoped.zones,
       divisions: scoped.divisions,
       states: scoped.states,
       districts: scoped.districts,
       stations: scoped.stations,
-      commodities: mapOptions(commodities),
-      rakeCmdts: mapOptions(rakeCmdts),
+      commodities: scoped.commodities,
+      rakeCmdts: scoped.rakeCmdts,
     };
-  }, [filters.commodities, movements, scoped]);
+  }, [scoped]);
 
   const filtered = useMemo(() => {
     return notifs.filter((notification) => {
@@ -256,19 +247,56 @@ export default function Notifications() {
   }
 
   async function saveCurrentFilter() {
-    if (!user?.id) return;
-    writePersistentFilters(FILTER_SOURCE, user.id, filters);
-    const saved = await base44.entities.SavedFilter.create({
-      user_id: user.id,
-      name: buildFilterName(filters),
-      source: SAVED_SOURCE,
-      filters,
-    });
-    setSavedFilters((prev) => [saved, ...prev]);
+    if (!user?.id || saveFilterInFlight.current) return;
+    saveFilterInFlight.current = true;
+    setSavingFilter(true);
+    setFilterSaveNotice(null);
+    const normalizedFilters = normalizeNotificationFilters(filters);
+    const signature = savedFilterSignature(normalizedFilters);
+    const filterName = buildFilterName(normalizedFilters);
+    try {
+      writePersistentFilters(FILTER_SOURCE, user.id, normalizedFilters);
+      const existing = savedFilters.find(
+        (savedFilter) =>
+          savedFilterSignature(savedFilter.filters) === signature
+      );
+      if (existing) {
+        setAppliedSavedFilterId(existing.id);
+        setFilterSaveNotice({
+          kind: "info",
+          text: `"${existing.name || filterName}" pehle se saved hai. Duplicate nahi banaya gaya. Is filter ko apply karne par matching notifications dikhengi.`,
+        });
+        return;
+      }
+
+      const saved = await base44.entities.SavedFilter.create({
+        user_id: user.id,
+        name: filterName,
+        source: SAVED_SOURCE,
+        filters: normalizedFilters,
+        notifications_enabled: true,
+      });
+      setSavedFilters((prev) => dedupeSavedFilters([saved, ...prev]));
+      setAppliedSavedFilterId(saved.id);
+      setFilterSaveNotice({
+        kind: "success",
+        text: `"${saved.name || filterName}" save ho gaya. Apply Saved Filter me ye ek hi baar dikhega aur apply karne par matching notifications dikhengi.`,
+      });
+    } catch (error) {
+      setFilterSaveNotice({
+        kind: "error",
+        text: error?.message || "Filter save nahi ho saka.",
+      });
+    } finally {
+      saveFilterInFlight.current = false;
+      setSavingFilter(false);
+    }
   }
 
   function clearFilters() {
     setFilters(DEFAULT_FILTERS);
+    setAppliedSavedFilterId("");
+    setFilterSaveNotice(null);
     if (user?.id) clearPersistentFilters(FILTER_SOURCE, user.id);
   }
 
@@ -353,17 +381,24 @@ export default function Notifications() {
 
           {savedFilters.length > 0 && (
             <select
-              value=""
+              value={appliedSavedFilterId}
               onChange={(event) => {
                 const saved = savedFilters.find((item) => item.id === event.target.value);
-                if (saved?.filters) applyFilterState(saved.filters);
+                setAppliedSavedFilterId(event.target.value);
+                if (saved?.filters) {
+                  applyFilterState(saved.filters);
+                  setFilterSaveNotice({
+                    kind: "info",
+                    text: `"${saved.name}" apply ho gaya. Bell wale saved filters matching notifications dikhate hain.`,
+                  });
+                }
               }}
               className="rounded-lg border border-border bg-muted px-3 py-2 text-sm text-foreground outline-none"
             >
               <option value="">Apply Saved Filter</option>
               {savedFilters.map((saved) => (
                 <option key={saved.id} value={saved.id}>
-                  {saved.name}
+                  {saved.notifications_enabled === false ? "" : "🔔 "}{saved.name}
                 </option>
               ))}
             </select>
@@ -372,10 +407,11 @@ export default function Notifications() {
           <button
             type="button"
             onClick={saveCurrentFilter}
-            className="inline-flex items-center gap-2 rounded-lg border border-primary/30 px-3 py-2 text-xs text-primary transition-colors hover:bg-primary/10"
+            disabled={savingFilter}
+            className="inline-flex items-center gap-2 rounded-lg border border-primary/30 px-3 py-2 text-xs text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Save className="h-3.5 w-3.5" />
-            Save Filter
+            {savingFilter ? "Saving..." : "Save Filter"}
           </button>
 
           {hasActiveFilters && (
@@ -388,6 +424,21 @@ export default function Notifications() {
             </button>
           )}
         </div>
+
+        {filterSaveNotice && (
+          <div
+            role="status"
+            className={`rounded-lg border px-3 py-2 text-xs ${
+              filterSaveNotice.kind === "success"
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
+                : filterSaveNotice.kind === "error"
+                  ? "border-destructive/30 bg-destructive/10 text-destructive"
+                  : "border-primary/30 bg-primary/10 text-primary"
+            }`}
+          >
+            {filterSaveNotice.text}
+          </div>
+        )}
 
         {filters.stations.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-muted/40 p-2.5">
@@ -619,16 +670,6 @@ function getCommodityCode(record) {
   return String(record.commodity_code || record.commodity || readRaw(record, "CMDT", "Commodity") || "").trim();
 }
 
-function getCommodityDisplay(record) {
-  return record.commodity_name || readRaw(record, "CMDT", "Commodity", "Commodity Name") || record.commodity || record.commodity_code || "";
-}
-
-function mapOptions(map) {
-  return [...map.entries()]
-    .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
-    .map(([value, label]) => ({ value, label, searchText: `${label} ${value}` }));
-}
-
 function buildFilterName(filters) {
   const parts = [
     ...filters.divisions,
@@ -639,4 +680,40 @@ function buildFilterName(filters) {
     ...filters.rakeCmdts,
   ].filter(Boolean);
   return parts.slice(0, 4).join(" + ") || "Notification Filter";
+}
+
+function normalizeNotificationFilters(filters = {}) {
+  const normalizeList = (value) =>
+    [...new Set(normalizeMultiValue(value).map((item) => String(item).trim()).filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right));
+
+  return {
+    showInward: filters.showInward ?? true,
+    showOutward: filters.showOutward ?? true,
+    zones: normalizeList(filters.zones ?? filters.filterZone),
+    divisions: normalizeList(filters.divisions ?? filters.filterDivision),
+    states: normalizeList(filters.states),
+    districts: normalizeList(filters.districts),
+    stations: normalizeList(
+      filters.stations ??
+        filters.selectedStations ??
+        filters.selectedInwardStations
+    ),
+    commodities: normalizeList(filters.commodities ?? filters.filterComm),
+    rakeCmdts: normalizeList(filters.rakeCmdts ?? filters.filterRakeCmdt),
+  };
+}
+
+function savedFilterSignature(filters = {}) {
+  return JSON.stringify(normalizeNotificationFilters(filters));
+}
+
+function dedupeSavedFilters(savedFilters = []) {
+  const seen = new Set();
+  return savedFilters.filter((savedFilter) => {
+    const signature = savedFilterSignature(savedFilter.filters);
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  });
 }

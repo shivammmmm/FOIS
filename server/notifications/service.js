@@ -65,7 +65,7 @@ export async function createNotification({
   // Defensive normalizations
   const normalized_notification_type = String(notification_type ?? type ?? "");
   const normalizedMovementType = String(type ?? normalized_notification_type).toLowerCase();
-  if (!['inward', 'outward'].includes(normalizedMovementType)) {
+  if (!['inward', 'outward', 'adminreview'].includes(normalizedMovementType)) {
     console.info('[NotificationDelivery] skipped non-user movement notification', { notification_type: normalized_notification_type, type });
     return { created: false, skipped: true, reason: 'unsupported_user_notification_type' };
   }
@@ -115,7 +115,7 @@ export async function createNotification({
     ...data,
   });
 
-  await dispatchNotification(railNotification, {
+  if (normalizedMovementType !== "adminreview") await dispatchNotification(railNotification, {
     movement_reference: dedup.movement_reference,
     station_code: dedup.station_code,
     notification_type: normalized_notification_type,

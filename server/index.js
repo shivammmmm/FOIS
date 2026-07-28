@@ -30,6 +30,26 @@ import {
 import { createNotification } from "./notifications/service.js";
 import { filterHierarchy, movementDashboardSummary, pagedFoisReports, pagedMovements, unmappedSummary } from "./movementQueries.js";
 import { invalidateCachePrefix } from "./cache.js";
+import {
+  ensureMatchingSchema,
+  getMatchingSummary,
+  listMatchingResults,
+  runMatchingEngine,
+} from "./services/matchingEngine.js";
+import {
+  comparisonDetail,
+  comparisonFilterOptions,
+  comparisonAnalytics,
+  comparisonRecords,
+  getRules,
+  matchingRuns,
+  resolveComparison,
+  saveRules,
+  unmatchComparison,
+  userFreightRecords,
+  userFreightSummary,
+  userTimeline,
+} from "./services/comparisonService.js";
 
 import {
   createOrUpdateStation,
@@ -1078,11 +1098,41 @@ app.delete(
   async (req, res, next) => {
     try {
       const result = await deleteUploadBatch(req.params.id);
+      result.matching = await runMatchingEngine({
+        requestedBy: req.auth?.username || "Admin",
+        trigger: "batch-delete",
+      });
       await invalidateCachePrefix("movement:");
       res.json(result);
     } catch (error) {
       next(error);
     }
+  }
+);
+
+app.get(
+  "/api/admin/uploads/check-duplicate",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (req, res, next) => {
+    try {
+      const fileHash = String(req.query.fileHash || "").trim().toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(fileHash)) {
+        return res.status(400).json({ error: "A valid SHA-256 fileHash is required" });
+      }
+      const priorUploads = await listRecords("UploadLog", {
+        filter: { file_hash: fileHash },
+        limit: 1,
+      });
+      if (!priorUploads.length) return res.json({ duplicate: false });
+      const prior = priorUploads[0];
+      return res.status(409).json({
+        error: `This Excel file is already uploaded as batch ${prior.batch_id} on ${prior.uploaded_at || prior.upload_time || prior.created_date}.`,
+        duplicate: true,
+        batch_id: prior.batch_id,
+        uploaded_at: prior.uploaded_at || prior.upload_time || prior.created_date,
+      });
+    } catch (error) { next(error); }
   }
 );
 
@@ -1337,26 +1387,9 @@ app.post(
           });
         });
 
-        const missingResult = await pool.query(
-          `SELECT COUNT(*)::int AS count FROM matured_indents mi
-           WHERE NOT EXISTS (
-             SELECT 1 FROM freight_movements fm WHERE fm.data->>'odr_number' = mi.data->>'indent_number'
-           )`
-        );
-        missingODRs = missingResult.rows[0]?.count || 0;
-
       } else {
         await createRecords("MaturedIndent", parsedRecords);
         insertedRecords = parsedRecords.length;
-
-        const missingResult = await pool.query(
-          `SELECT COUNT(*)::int AS count FROM matured_indents mi
-           WHERE NOT EXISTS (
-             SELECT 1 FROM freight_movements fm WHERE fm.data->>'odr_number' = mi.data->>'indent_number'
-           )`
-        );
-        missingODRs = missingResult.rows[0]?.count || 0;
-
       }
 
       const totalValidAcrossSheets = sheetWiseStats.reduce(
@@ -1409,12 +1442,23 @@ app.post(
         upload_time: uploadTime,
       };
 
-      await createRecord("UploadLog", logEntry);
+      const savedUploadLog = await createRecord("UploadLog", logEntry);
       await pool.end();
+      const matching = await runMatchingEngine({
+        requestedBy: req.auth?.username || "Admin",
+        trigger: fileType === "ODR" ? "odr-upload" : "matured-upload",
+      });
+      missingODRs = matching.unmatched_matured;
+      logEntry.missing_odrs_found = missingODRs;
+      await updateRecord("UploadLog", savedUploadLog.id, {
+        missing_odrs_found: missingODRs,
+        matching,
+      });
 
       return res.status(201).json({
         success: true,
         ...logEntry,
+        matching,
         message: `Successfully processed ${processedSheets}/${totalSheets} sheet(s). Total valid records: ${parsedRecords.length}.`,
         storage: getStorageStatus(),
       });
@@ -1440,6 +1484,288 @@ app.post(
       }
       next(error);
     }
+  }
+);
+
+app.get(
+  "/api/admin/matching/summary",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (_req, res, next) => {
+    try {
+      res.json(await getMatchingSummary());
+    } catch (error) { next(error); }
+  }
+);
+
+app.use("/api/admin/comparison", (_req, res, next) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, private");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  next();
+});
+
+app.get("/api/admin/comparison/summary", requireAuth, requireRoles(ADMIN_ROLES), async (_req, res, next) => {
+  try {
+    const value = await getMatchingSummary();
+    res.json({
+      total_odr: value.total_odr || 0,
+      total_matured: value.total_matured || 0,
+      matched: value.matched || 0,
+      pending_odr: value.pending || 0,
+      unmatched_matured: value.unmatched_matured || 0,
+      partial_matches: value.partial || 0,
+      manual_review: value.manual_review || 0,
+      duplicate_odr: value.duplicate_odr || 0,
+      duplicate_matured: value.duplicate_matured || 0,
+      completed_supply: value.completed || 0,
+      last_matching_run: value.last_matching_run || null,
+      matching_duration_ms: value.matching_duration || 0,
+      pending: value.pending || 0,
+      partial: value.partial || 0,
+      completed: value.completed || 0,
+      matching_duration: value.matching_duration || 0,
+    });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/admin/comparison/records", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    const result = await comparisonRecords(req.query, {
+      page: req.query.page,
+      limit: req.query.page_size || req.query.limit,
+    });
+    const records = result.items.map((row) => ({
+      comparison_id: row.match_id, odr_id: row.odr_id, matured_id: row.matured_id,
+      odr_number: row.odr?.odr_number || null,
+      matured_indent_number: row.matured?.indent_number || null,
+      division: row.odr?.division || null, station_from: row.odr?.station_from || null,
+      destination: row.odr?.station_to || null, state: row.source_state || null,
+      district: row.source_district || null,
+      company: row.odr?.company || row.odr?.company_code || null,
+      cnsg: row.odr?.raw_data?.cnsg || null, commodity: row.odr?.commodity || null,
+      rake_cmdt: row.odr?.rake_cmdt || row.odr?.rake_commodity_code || null,
+      demand_date: row.odr?.departure_date || null,
+      indented_units: row.indented_units, supplied_units: row.supplied_units,
+      balance_units: row.balance_units, status: row.status,
+      confidence: Number(row.confidence || 0), match_method: row.match_method,
+      odr_batch_id: row.batch_odr, matured_batch_id: row.batch_matured,
+      matched_on: row.matched_on, resolution_note: row.resolution_note,
+    }));
+    res.json({
+      records,
+      items: result.items,
+      page: result.page,
+      page_size: result.limit,
+      limit: result.limit,
+      total: result.total,
+      total_pages: Math.ceil(result.total / result.limit),
+    });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/admin/comparison/filters", requireAuth, requireRoles(ADMIN_ROLES), async (_req, res, next) => {
+  try { res.json(await comparisonFilterOptions()); } catch (error) { next(error); }
+});
+
+app.get("/api/admin/comparison/options", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
+  try { res.json(await comparisonFilterOptions({ state: String(req.query.state || "") })); } catch (error) { next(error); }
+});
+
+app.get("/api/admin/comparison/analytics", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
+  try { res.json(await comparisonAnalytics(req.query)); } catch (error) { next(error); }
+});
+
+app.get("/api/admin/comparison/runs", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    const items = (await matchingRuns({ limit: req.query.limit })).map((run) => ({
+      ...run,
+      manual_review: run.ambiguous,
+      duplicates: run.duplicate_count,
+    }));
+    res.json({ items, runs: items });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/admin/comparison/rules", requireAuth, requireRoles(ADMIN_ROLES), async (_req, res, next) => {
+  try { res.json(await getRules()); } catch (error) { next(error); }
+});
+
+app.put("/api/admin/comparison/rules", requireAuth, requireRoles(["super_admin"]), async (req, res, next) => {
+  try { res.json(await saveRules(req.body || {}, req.auth?.username || "Super Admin")); } catch (error) { next(error); }
+});
+
+app.get("/api/admin/comparison/:id", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    if (req.params.id === "export.xlsx") return next();
+    const detail = await comparisonDetail(req.params.id);
+    if (!detail) return res.status(404).json({ error: "Comparison record not found" });
+    res.json(detail);
+  } catch (error) { next(error); }
+});
+
+app.post("/api/admin/comparison/reprocess", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    const payload = req.body || {};
+    const summary = await runMatchingEngine({
+      requestedBy: req.auth?.username || "Admin",
+      trigger: "manual-reprocess",
+      scope: typeof payload.scope === "string" ? { type: payload.scope } : payload.scope || { type: "all" },
+      resetManualDecisions: Boolean(payload.reset_manual_decisions && req.auth?.role === "super_admin"),
+    });
+    res.json({
+      run_id: summary.run_id, status: "completed",
+      odr_scanned: summary.total_odr, matured_scanned: summary.total_matured,
+      matched: summary.matched + summary.completed, pending: summary.pending,
+      partial: summary.partial, manual_review: summary.manual_review,
+      duplicates: summary.duplicates, duration_ms: summary.elapsed_ms,
+      ...summary,
+    });
+  } catch (error) { next(error); }
+});
+
+app.post("/api/admin/comparison/:id/reprocess", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    const detail = await comparisonDetail(req.params.id);
+    if (!detail?.odr_id) return res.status(404).json({ error: "Comparison record not found" });
+    res.json(await runMatchingEngine({
+      requestedBy: req.auth?.username || "Admin",
+      trigger: "record-reprocess",
+      scope: { type: "record", odr_id: detail.odr_id },
+    }));
+  } catch (error) { next(error); }
+});
+
+app.post("/api/admin/comparison/:id/resolve", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    if (!req.body?.matured_id) return res.status(400).json({ error: "matured_id is required" });
+    res.json(await resolveComparison(req.params.id, {
+      matured_id: String(req.body.matured_id),
+      note: String(req.body.resolution_note || req.body.note || ""),
+      resolvedBy: req.auth?.username || "Admin",
+    }));
+  } catch (error) { next(error); }
+});
+
+app.post("/api/admin/comparison/:id/unmatch", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    res.json(await unmatchComparison(req.params.id, {
+      note: String(req.body?.resolution_note || req.body?.note || ""),
+      resolvedBy: req.auth?.username || "Admin",
+    }));
+  } catch (error) { next(error); }
+});
+
+app.post("/api/admin/comparison/reset-manual-decisions", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    const { Pool } = await import("pg");
+    const databaseUrl = process.env.DATABASE_URL || "postgresql://fois_user:fois_password@localhost:5432/fois_db";
+    const pool = new Pool({ connectionString: databaseUrl });
+    const count = await pool.query("SELECT COUNT(*)::int affected FROM odr_matured_matches WHERE manual_locked=TRUE");
+    await pool.end();
+    const matching = await runMatchingEngine({
+      requestedBy: req.auth?.username || "Admin",
+      trigger: "reset-manual-decisions",
+      scope: { type: "all" },
+      resetManualDecisions: true,
+    });
+    res.json({ success: true, affected_count: count.rows[0].affected, reset_by: req.auth?.username, matching });
+  } catch (error) { next(error); }
+});
+
+app.get("/api/admin/comparison/export.xlsx", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
+  try {
+    const data = await comparisonRecords(req.query, { page: 1, limit: 50000, maxLimit: 50000 });
+    const rows = data.items.map((row) => ({
+      "ODR Number": row.odr?.odr_number || "", Division: row.odr?.division || "",
+      "Station From": row.odr?.station_from || "", Destination: row.odr?.station_to || "",
+      Company: row.odr?.company || row.odr?.company_code || "", CNSG: row.odr?.raw_data?.cnsg || "",
+      Commodity: row.odr?.commodity || "", "Rake CMDT": row.odr?.rake_cmdt || row.odr?.rake_commodity_code || "",
+      "Demand Date": row.odr?.departure_date || "", "Indented Units": row.indented_units,
+      "Supplied Units": row.supplied_units, "Balance Units": row.balance_units,
+      "Matured Indent": row.matured?.indent_number || "", Status: row.status,
+      Confidence: Number(row.confidence || 0), "Match Method": row.match_method,
+      "ODR Batch": row.batch_odr || "", "Matured Batch": row.batch_matured || "",
+      "Matched On": row.matched_on || "",
+    }));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "Comparison");
+    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", 'attachment; filename="ODR_Matured_Comparison.xlsx"');
+    res.send(buffer);
+  } catch (error) { next(error); }
+});
+
+app.get("/api/user/freight-status/summary", requireAuth, async (req, res, next) => {
+  try { res.json(await userFreightSummary(req.auth, req.query)); } catch (error) { next(error); }
+});
+
+app.get("/api/user/freight-status/records", requireAuth, async (req, res, next) => {
+  try { res.json(await userFreightRecords(req.auth, req.query, { page: req.query.page, limit: req.query.limit })); } catch (error) { next(error); }
+});
+
+app.get("/api/user/freight-status/analytics", requireAuth, async (req, res, next) => {
+  try { res.json(await comparisonAnalytics(req.query, req.auth)); } catch (error) { next(error); }
+});
+
+app.get("/api/user/freight-status-export.xlsx", requireAuth, async (req, res, next) => {
+  try {
+    const data = await userFreightRecords(req.auth, req.query, { page: 1, limit: 50000, maxLimit: 50000 });
+    const rows = data.items.map((row) => ({
+      "Demand No.": row.odr?.odr_number || "", Division: row.odr?.division || "",
+      "Source Station": row.odr?.station_from || "", Destination: row.odr?.station_to || "",
+      Company: row.odr?.company || row.odr?.company_code || "", Commodity: row.odr?.commodity || "",
+      "Rake CMDT": row.odr?.rake_cmdt || row.odr?.rake_commodity_code || "",
+      "Demand Date": row.odr?.departure_date || "", "Indented Units": row.indented_units,
+      "Supplied Units": row.supplied_units, "Balance Units": row.balance_units,
+      Status: row.status, "Last Updated": row.updated_date || "",
+    }));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(rows), "Freight Status");
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", 'attachment; filename="My_Freight_Status.xlsx"');
+    res.send(XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }));
+  } catch (error) { next(error); }
+});
+
+app.get("/api/user/freight-status/:id/timeline", requireAuth, async (req, res, next) => {
+  try {
+    const timeline = await userTimeline(req.auth, req.params.id);
+    if (!timeline) return res.status(404).json({ error: "Freight record not found" });
+    res.json(timeline);
+  } catch (error) { next(error); }
+});
+
+app.get(
+  "/api/admin/matching/results",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (req, res, next) => {
+    try {
+      res.json(await listMatchingResults({
+        page: req.query.page,
+        limit: req.query.limit,
+        status: String(req.query.status || ""),
+        search: String(req.query.search || ""),
+      }));
+    } catch (error) { next(error); }
+  }
+);
+
+app.post(
+  "/api/admin/matching/reprocess",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  async (req, res, next) => {
+    try {
+      const summary = await runMatchingEngine({
+        requestedBy: req.auth?.username || "Admin",
+        trigger: "manual-reprocess",
+      });
+      await invalidateCachePrefix("movement:");
+      res.json({ success: true, ...summary });
+    } catch (error) { next(error); }
   }
 );
 
@@ -1718,16 +2044,19 @@ app.get("/api/notifications", requireAuth, async (req, res, next) => {
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
     const offset = (page - 1) * limit;
+    const visibleTypes = ADMIN_ROLES.includes(req.auth?.role)
+      ? ["Inward", "Outward", "AdminReview"]
+      : ["Inward", "Outward"];
     const rows = await listRecords("RailNotification", {
+      filter: { type: visibleTypes },
       sort: "-created_date",
       limit: limit + 1,
       offset,
     });
     const hasMore = rows.length > limit;
     const pageRows = rows.slice(0, limit);
-    const allowed = pageRows.filter((item) => ["inward", "outward"].includes(String(item.type || "").toLowerCase()));
     res.json({
-      items: allowed.map((item) => ({ ...item, is_read: (item.read_by || []).includes(userId) })),
+      items: pageRows.map((item) => ({ ...item, is_read: (item.read_by || []).includes(userId) })),
       page,
       limit,
       hasMore,
@@ -1749,7 +2078,10 @@ app.post("/api/notifications/:id/read", requireAuth, async (req, res, next) => {
     const userId = String(req.auth?.id || req.auth?.sub || "");
     const rows = await listRecords("RailNotification", { filter: { id: req.params.id }, limit: 1 });
     const item = rows[0];
-    if (!item || !["inward", "outward"].includes(String(item.type || "").toLowerCase())) return res.status(404).json({ error: "Notification not found" });
+    const allowedTypes = ADMIN_ROLES.includes(req.auth?.role)
+      ? ["inward", "outward", "adminreview"]
+      : ["inward", "outward"];
+    if (!item || !allowedTypes.includes(String(item.type || "").toLowerCase())) return res.status(404).json({ error: "Notification not found" });
     const readBy = [...new Set([...(Array.isArray(item.read_by) ? item.read_by : []), userId])];
     await updateRecord("RailNotification", item.id, { read_by: readBy });
     res.json({ success: true });
@@ -2519,8 +2851,17 @@ async function listCatalogRecords(pool, masterKey, { search = "", limit = 10000,
   return { rows: rows.rows, total: count.rows[0]?.total || 0, config };
 }
 
-async function requireMasterReference(pool, tableName, code, label) {
+function normalizeStateMasterCode(code) {
   const normalized = String(code || "").trim().toUpperCase();
+  return { TG: "TS", OR: "OD", DH: "DD" }[normalized] || normalized;
+}
+
+async function requireMasterReference(pool, tableName, code, label) {
+  const rawCode = String(code || "").trim().toUpperCase();
+  const normalized =
+    tableName === "state_master"
+      ? normalizeStateMasterCode(rawCode)
+      : rawCode;
   if (!normalized) throw new Error(`${label} is required`);
   const result = await pool.query(
     `SELECT id FROM ${tableName} WHERE code = $1 LIMIT 1`,
@@ -2532,18 +2873,15 @@ async function requireMasterReference(pool, tableName, code, label) {
   return normalized;
 }
 
-async function requireDistrictReference(pool, stateCode, districtCode) {
+async function requireDistrictReference(_pool, stateCode, districtCode) {
   const state = String(stateCode || "").trim().toUpperCase();
-  const district = String(districtCode || "").trim().toUpperCase();
+  const district = String(districtCode || "").trim();
   if (!state) throw new Error("State is required");
   if (!district) throw new Error("District is required");
-  const result = await pool.query(
-    `SELECT id FROM district_master WHERE code = $1 AND parent_code = $2 LIMIT 1`,
-    [district, state]
-  );
-  if (result.rows.length === 0) {
-    throw new Error(`District '${district}' does not exist for state '${state}'`);
-  }
+
+  // Station workbooks use the legacy "DistrictCode" header for a full
+  // district name. The district catalog is not exhaustive, so requiring an
+  // exact catalog code/name here rejects otherwise valid station records.
   return district;
 }
 
@@ -2552,13 +2890,10 @@ async function requireDivisionReference(pool, zoneCode, divisionCode) {
   const division = String(divisionCode || "").trim().toUpperCase();
   if (!zone) throw new Error("Zone is required");
   if (!division) throw new Error("Division is required");
-  const result = await pool.query(
-    `SELECT id FROM division_master WHERE code = $1 AND parent_code = $2 LIMIT 1`,
-    [division, zone]
-  );
-  if (result.rows.length === 0) {
-    throw new Error(`Division '${division}' does not exist for zone '${zone}'`);
-  }
+
+  // Preserve valid source division codes even when the local division catalog
+  // has not been populated with that code yet. Zone validity is checked by
+  // requireMasterReference before this function is called.
   return division;
 }
 
@@ -2719,7 +3054,7 @@ app.post(
       const result = await withCatalogPool(async (pool) => {
         await ensureCatalogTable(pool, MASTER_CATALOGS.district);
         const normalized = records.map((record, index) => {
-          const parentCode = String(record?.parent_code || "").trim().toUpperCase();
+          const parentCode = normalizeStateMasterCode(record?.parent_code);
           const name = String(record?.name || "").trim();
           if (!parentCode || !name) throw new Error(`Row ${index + 1}: StateCode and DistrictName are required`);
           const code = `${parentCode}_${name}`
@@ -2738,8 +3073,34 @@ app.post(
         const missingStates = stateCodes.filter((code) => !existingStates.has(code));
         if (missingStates.length) throw new Error(`Parent State not found: ${missingStates.join(", ")}`);
 
+        const existingDistricts = await pool.query(
+          `SELECT id, code, name, parent_code
+           FROM district_master
+           WHERE parent_code = ANY($1::text[])`,
+          [stateCodes]
+        );
+        const existingById = new Map(
+          existingDistricts.rows.map((row) => [row.id, row])
+        );
+        const existingByStateAndName = new Map(
+          existingDistricts.rows.map((row) => [
+            `${row.parent_code}|${String(row.name || "").trim().toLocaleLowerCase("en-IN")}`,
+            row,
+          ])
+        );
+        const resolved = normalized.map((record) => {
+          const existing =
+            existingById.get(record.id) ||
+            existingByStateAndName.get(
+              `${record.parentCode}|${record.name.toLocaleLowerCase("en-IN")}`
+            );
+          return existing
+            ? { ...record, id: existing.id, code: existing.code }
+            : record;
+        });
+
         const params = [];
-        const values = normalized.map((record) => {
+        const values = resolved.map((record) => {
           const start = params.length + 1;
           params.push(record.id, record.code, record.name, record.parentCode);
           return `($${start}, $${start + 1}, $${start + 2}, $${start + 3}, TRUE, NOW(), NOW())`;
@@ -2883,6 +3244,23 @@ app.use((error, _req, res, _next) => {
 });
 
 await initializeStorage();
+if (getStorageStatus().postgres) {
+  await ensureMatchingSchema();
+  const initialComparison = await getMatchingSummary();
+  const persistedComparisonCount = [
+    initialComparison.matched, initialComparison.pending, initialComparison.partial,
+    initialComparison.completed, initialComparison.duplicate,
+    initialComparison.manual_review, initialComparison.unmatched_matured,
+  ].reduce((sum, value) => sum + Number(value || 0), 0);
+  if (Number(initialComparison.total_odr || 0) + Number(initialComparison.total_matured || 0) > 0 && persistedComparisonCount === 0) {
+    await runMatchingEngine({
+      requestedBy: "System startup",
+      trigger: "initial-safe-reprocess",
+      scope: { type: "all" },
+      emitNotifications: false,
+    });
+  }
+}
 await ensureSuperAdminExists(SUPER_ADMIN);
 await autoSeedMastersIfEmpty();
 

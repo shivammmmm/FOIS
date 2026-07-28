@@ -44,7 +44,7 @@ function isWagonType(value) {
  */
 export function parseODRRow(row, batchId) {
   const fields = getFoisFields(row);
-  if (!fields.srNo || !fields.division || !fields.indentNo) return null;
+  if (!fields.srNo || !fields.division || !fields.indentNo || isRepeatedHeaderRow(fields)) return null;
 
   const movementType = detectMovementType(fields.pc, fields.indentType, fields.tt);
   const status = detectStatus({
@@ -88,7 +88,7 @@ export function parseODRRow(row, batchId) {
  */
 export function parseIndentRow(row, batchId) {
   const fields = getFoisFields(row);
-  if (!fields.srNo || !fields.division || !fields.indentNo) return null;
+  if (!fields.srNo || !fields.division || !fields.indentNo || isRepeatedHeaderRow(fields)) return null;
 
   const rawRakeCmdt = fields.rakeCmdt || "";
   const isWagon = isWagonType(rawRakeCmdt);
@@ -120,6 +120,7 @@ export function parseIndentRow(row, batchId) {
 
 export function getIndentRowRejectionReason(row) {
   const fields = getFoisFields(row);
+  if (isRepeatedHeaderRow(fields)) return "Repeated worksheet header row";
   const missing = [];
   if (!fields.srNo) missing.push('S.NO.');
   if (!fields.division) missing.push('DVSN');
@@ -184,6 +185,17 @@ function getFoisFields(row) {
   };
 }
 
+function isRepeatedHeaderRow(fields) {
+  const division = String(fields.division || "").trim().toUpperCase();
+  const stationFrom = String(fields.stationFrom || "").trim().toUpperCase();
+  const indentNo = String(fields.indentNo || "").trim().toUpperCase();
+  return (
+    ["DVSN", "DIVISION"].includes(division) ||
+    ["STTN FROM", "STATION FROM", "FROM STATION"].includes(stationFrom) ||
+    ["NO.", "NO", "DEMAND NO.", "DEMAND NO", "INDENT NO.", "INDENT NO"].includes(indentNo)
+  );
+}
+
 function cell(row, key) {
   const normalized = normalizeRow(row);
   return String(normalized[normalizeHeader(key)] ?? '').trim();
@@ -237,28 +249,6 @@ function buildFoisRawData(fields) {
     Time: fields.indentTime,
     UpdatedTime: fields.suppliedTime,
   };
-}
-
-/**
- * Compare ODR records with Matured Indent records.
- * Returns lists of duplicates and unmatched indents.
- */
-export function compareODRwithIndents(odrRecords, indentRecords) {
-  // Find duplicates within ODR batch (same Sr No)
-  const srNoCounts = {};
-  odrRecords.forEach(r => {
-    const key = r.odr_number;
-    srNoCounts[key] = (srNoCounts[key] || 0) + 1;
-  });
-  const duplicates = odrRecords.filter(r => srNoCounts[r.odr_number] > 1);
-  const duplicateNos = new Set(duplicates.map(r => r.odr_number));
-
-  // Match indents to ODR records by Sr No or route
-  const odrSet = new Set(odrRecords.map(r => r.odr_number));
-  const unmatchedIndents = indentRecords.filter(i => !odrSet.has(i.indent_number));
-  const matchedIndents = indentRecords.filter(i => odrSet.has(i.indent_number));
-
-  return { duplicates, duplicateNos, unmatchedIndents, matchedIndents };
 }
 
 function detectMovementType(category, type, flag2) {

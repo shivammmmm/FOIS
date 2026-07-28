@@ -42,6 +42,7 @@ export default function UploadCenter() {
       setUploadResult({ success: false, message: err.message });
       loadLogs();
     }
+    if (fileRef.current) fileRef.current.value = '';
     setUploading(false);
   };
 

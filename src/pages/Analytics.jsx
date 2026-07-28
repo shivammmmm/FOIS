@@ -12,18 +12,21 @@ import { BarChart3 } from 'lucide-react';
 export default function Analytics() {
   const [movements, setMovements] = useState([]);
   const [indents, setIndents] = useState([]);
+  const [matchingSummary, setMatchingSummary] = useState({});
   const [loading, setLoading] = useState(true);
   const { getDivisionName } = useMasterHierarchy();
 
   useEffect(() => {
     const load = async () => {
       try {
-        const [mv, ind] = await Promise.all([
+        const [mv, ind, matching] = await Promise.all([
           base44.entities.FreightMovement.list('-created_date', 1000),
           base44.entities.MaturedIndent.list('-created_date', 500),
+          base44.admin.matching.summary(),
         ]);
         setMovements(mv);
         setIndents(ind);
+        setMatchingSummary(matching);
       } catch (e) { console.error(e); }
       setLoading(false);
     };
@@ -65,10 +68,10 @@ export default function Analytics() {
   const rakeData = Object.entries(rakeMap).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count).slice(0, 8);
 
   // ODR vs Indent comparison
-  const odrCount = movements.length;
-  const indentCount = indents.length;
-  const matchedCount = indents.filter(i => i.odr_matched).length;
-  const missingCount = indentCount - matchedCount;
+  const odrCount = Number(matchingSummary.total_odr || 0);
+  const indentCount = Number(matchingSummary.total_matured || 0);
+  const matchedCount = Number(matchingSummary.matched || 0);
+  const missingCount = Number(matchingSummary.unmatched_matured || 0);
 
   const STATUS_COLORS = {
     Pending: '#F59E0B', 'In Transit': '#06B6D4', Arrived: '#10B981', Departed: '#3B82F6', Delayed: '#EF4444', Unknown: '#6B7280'
