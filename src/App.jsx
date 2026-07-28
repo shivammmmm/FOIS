@@ -34,8 +34,6 @@ const UserManagement = React.lazy(() => import("@/pages/UserManagement"));
 const NotificationPreferences = React.lazy(() => import("@/pages/NotificationPreferences"));
 const MasterManagement = React.lazy(() => import("@/pages/MasterManagement.jsx"));
 const UnmappedCodes = React.lazy(() => import("@/pages/UnmappedCodes.jsx"));
-const MatchingComparison = React.lazy(() => import("@/pages/MatchingComparison.jsx"));
-const FreightStatus = React.lazy(() => import("@/pages/FreightStatus.jsx"));
 
 const ADMIN_ROLES = ["super_admin", "admin"];
 const USER_ROLES = ["user"];
@@ -174,8 +172,8 @@ const AuthenticatedApp = () => {
             <Route path="/admin" element={<Navigate to="/admin/fois-reports" replace />} />
             <Route path="/admin/upload" element={<UploadCenter />} />
             <Route path="/admin/upload-history" element={<UploadHistory />} />
-            <Route path="/admin/matching" element={<Navigate to="/admin/odr-matured-comparison" replace />} />
-            <Route path="/admin/odr-matured-comparison" element={<MatchingComparison />} />
+            <Route path="/admin/matching" element={<Navigate to="/admin/fois-reports" replace />} />
+            <Route path="/admin/odr-matured-comparison" element={<Navigate to="/admin/fois-reports" replace />} />
             <Route path="/admin/dashboard" element={<Navigate to="/admin/inward-dashboard" replace />} />
             <Route path="/admin/freight" element={<Navigate to="/admin/fois-reports" replace />} />
             <Route path="/admin/:operation" element={<OperationsKeepAlive />} />
@@ -220,8 +218,8 @@ const AuthenticatedApp = () => {
           }
         >
           <Route element={<Layout />}>
-            <Route path="/user/freight-status" element={<FreightStatus />} />
-            <Route path="/freight-status" element={<FreightStatus />} />
+            <Route path="/user/freight-status" element={<Navigate to="/fois-reports" replace />} />
+            <Route path="/freight-status" element={<Navigate to="/fois-reports" replace />} />
             <Route path="/dashboard" element={<Navigate to="/inward-dashboard" replace />} />
             <Route path="/search" element={<Navigate to="/fois-reports" replace />} />
             <Route path="/:operation" element={<OperationsKeepAlive />} />
