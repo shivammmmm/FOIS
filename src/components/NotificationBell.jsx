@@ -16,8 +16,9 @@ export default function NotificationBell({ isAdmin = false }) {
     try {
       const response = await base44.notifications.list({ page: 1, limit: 100 });
       const rows = response?.items || [];
-      setNotifications(rows);
-      setUnread(rows.filter((item) => !item.is_read).length);
+      const unreadItems = rows.filter((item) => !item.is_read);
+      setNotifications(unreadItems);
+      setUnread(unreadItems.length);
     } catch (e) { /* ignore */ }
     finally { setLoading(false); }
   };
@@ -45,35 +46,105 @@ export default function NotificationBell({ isAdmin = false }) {
   }, [open]);
 
   const markRead = async (item) => {
-    if (!item.is_read) await base44.notifications.markRead(item.id);
-    await load();
+    setNotifications((prev) => prev.filter((n) => n.id !== item.id));
+    setUnread((prev) => Math.max(prev - 1, 0));
+    await base44.notifications.markRead(item.id).catch(() => undefined);
   };
+
   const markAll = async () => {
-    setMarkingAll(true); setFeedback('');
-    try { await base44.notifications.markAllRead(); setNotifications((items) => items.map((item) => ({ ...item, is_read: true }))); setUnread(0); setFeedback('All notifications marked as read.'); }
-    catch (error) { setFeedback(error?.message || 'Unable to mark notifications as read.'); }
-    finally { setMarkingAll(false); }
+    setMarkingAll(true);
+    setFeedback('');
+    setNotifications([]);
+    setUnread(0);
+    try {
+      await base44.notifications.markAllRead();
+      setFeedback('All notifications marked as read.');
+    } catch (error) {
+      setFeedback(error?.message || 'Unable to mark notifications as read.');
+      load();
+    } finally {
+      setMarkingAll(false);
+    }
   };
 
   return (
     <div ref={rootRef} className="relative">
-    <button type="button" aria-label="Notifications" onClick={() => { setOpen((value) => !value); load(); }} className="relative p-2 rounded-lg hover:bg-muted transition-colors">
-      <Bell className="w-5 h-5 text-muted-foreground" />
-      {unread > 0 && (
-        <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-destructive rounded-full text-[10px] font-bold text-white flex items-center justify-center">
-          {unread > 9 ? '9+' : unread}
-        </span>
+      <button
+        type="button"
+        aria-label="Notifications"
+        onClick={() => {
+          setOpen((value) => !value);
+          load();
+        }}
+        className="relative p-2 rounded-lg hover:bg-muted transition-colors cursor-pointer"
+      >
+        <Bell className="w-5 h-5 text-muted-foreground" />
+        {unread > 0 && (
+          <span className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-destructive rounded-full text-[10px] font-bold text-white flex items-center justify-center">
+            {unread > 9 ? '9+' : unread}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div className="absolute right-0 z-50 mt-2 w-80 overflow-hidden rounded-xl border border-border bg-card shadow-xl">
+          <div className="flex items-center justify-between border-b border-border px-4 py-3">
+            <strong className="text-sm text-foreground">Unread Notifications</strong>
+            <button
+              onClick={markAll}
+              disabled={markingAll || unread === 0}
+              className="text-xs font-semibold text-primary hover:underline disabled:opacity-50 cursor-pointer"
+            >
+              {markingAll ? 'Marking...' : 'Mark all as read'}
+            </button>
+          </div>
+
+          {feedback && (
+            <div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+              {feedback}
+            </div>
+          )}
+
+          <div className="max-h-96 overflow-y-auto">
+            {loading && notifications.length === 0 ? (
+              <div className="p-6 text-center text-sm text-muted-foreground">
+                Loading notifications...
+              </div>
+            ) : notifications.length === 0 ? (
+              <div className="p-6 text-center text-sm text-muted-foreground">
+                No unread notifications.
+              </div>
+            ) : (
+              notifications.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => markRead(item)}
+                  className="block w-full border-b border-border/60 px-4 py-3 text-left hover:bg-muted/40 transition-colors bg-primary/5 cursor-pointer"
+                >
+                  <div className="text-sm font-medium text-foreground">
+                    {item.title || 'Notification'}
+                  </div>
+                  <div className="mt-1 whitespace-pre-line text-xs leading-5 text-muted-foreground">
+                    {item.message || ''}
+                  </div>
+                  <span className="mt-1 inline-block text-[10px] font-semibold text-primary">
+                    Mark as read
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+
+          {isAdmin && (
+            <a
+              href="/admin/notifications"
+              className="block px-4 py-2.5 text-center text-xs font-semibold text-primary border-t border-border hover:bg-muted/30 transition-colors"
+            >
+              Admin notification management
+            </a>
+          )}
+        </div>
       )}
-    </button>
-    {open && <div className="absolute right-0 z-50 mt-2 w-80 overflow-hidden rounded-xl border border-border bg-card shadow-xl">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3"><strong className="text-sm">Recent Notifications</strong><button onClick={markAll} disabled={markingAll || unread === 0} className="text-xs text-primary disabled:opacity-50">{markingAll ? 'Marking...' : 'Mark all as read'}</button></div>
-      {feedback && <div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">{feedback}</div>}
-      <div className="max-h-96 overflow-y-auto">
-        {loading && notifications.length === 0 ? <div className="p-6 text-center text-sm text-muted-foreground">Loading notifications...</div> :
-        notifications.length === 0 ? <div className="p-6 text-center text-sm text-muted-foreground">No notifications yet.</div> : notifications.map((item) => <button key={item.id} onClick={() => markRead(item)} className={`block w-full border-b border-border/60 px-4 py-3 text-left hover:bg-muted/40 ${item.is_read ? '' : 'bg-primary/5'}`}><div className="text-sm font-medium">{item.title || 'Notification'}</div><div className="mt-1 whitespace-pre-line text-xs leading-5 text-muted-foreground">{item.message || ''}</div>{!item.is_read && <span className="mt-1 inline-block text-[10px] text-primary">Mark as read</span>}</button>)}
-      </div>
-      {isAdmin && <a href="/admin/notifications" className="block px-4 py-2 text-center text-xs text-primary">Admin notification management</a>}
-    </div>}
     </div>
   );
 }

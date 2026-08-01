@@ -7,6 +7,7 @@ import {
   CheckCheck,
   Save,
   Trash2,
+  Check,
 } from "lucide-react";
 import { base44 } from "@/api/base44Client";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
@@ -14,7 +15,7 @@ import { useAuth } from "@/lib/AuthContext";
 import {
   getBusinessRakeCmdtCode as getRakeCmdtCode,
 } from "@/utils/freightRecordFilters";
-import { formatStationNameAndCode, getStationMeta, registerStationMetaFromRecords } from "@/utils/stationMaster";
+import { getStationMeta, registerStationMetaFromRecords } from "@/utils/stationMaster";
 import { useMasterHierarchy } from "@/utils/masterHierarchy";
 import { buildFilterHierarchyOptions } from "@/utils/filterHierarchy";
 import {
@@ -83,6 +84,18 @@ export default function Notifications() {
     district: filters.districts,
     commodity: filters.commodities,
   });
+
+  const options = useMemo(() => {
+    return {
+      zones: scoped.zones,
+      divisions: scoped.divisions,
+      states: scoped.states,
+      districts: scoped.districts,
+      stations: scoped.stations,
+      commodities: scoped.commodities,
+      rakeCmdts: scoped.rakeCmdts,
+    };
+  }, [scoped]);
 
   useEffect(() => {
     loadData();
@@ -171,19 +184,15 @@ export default function Notifications() {
     return { byOdr, byBatch };
   }, [movements]);
 
-  const options = useMemo(() => {
-    return {
-      zones: scoped.zones,
-      divisions: scoped.divisions,
-      states: scoped.states,
-      districts: scoped.districts,
-      stations: scoped.stations,
-      commodities: scoped.commodities,
-      rakeCmdts: scoped.rakeCmdts,
-    };
-  }, [scoped]);
+  function isInwardType(type) {
+    return INWARD_TYPES.includes(type);
+  }
 
-  const filtered = useMemo(() => {
+  function isOutwardType(type) {
+    return OUTWARD_TYPES.includes(type);
+  }
+
+  const filteredNotifs = useMemo(() => {
     return notifs.filter((notification) => {
       if (isInwardType(notification.type) && !filters.showInward) return false;
       if (isOutwardType(notification.type) && !filters.showOutward) return false;
@@ -212,7 +221,12 @@ export default function Notifications() {
     });
   }, [filters, movementIndexes, notifs, divisionZoneCode]);
 
-  const unreadCount = notifs.filter((notification) => !notification.is_read).length;
+  const displayNotifs = useMemo(() => {
+    return filteredNotifs.filter((notification) => !notification.is_read);
+  }, [filteredNotifs]);
+
+  const unreadCount = displayNotifs.length;
+
   const hasActiveFilters =
     filters.showInward !== true ||
     filters.showOutward !== true ||
@@ -264,28 +278,30 @@ export default function Notifications() {
         setAppliedSavedFilterId(existing.id);
         setFilterSaveNotice({
           kind: "info",
-          text: `"${existing.name || filterName}" pehle se saved hai. Duplicate nahi banaya gaya. Is filter ko apply karne par matching notifications dikhengi.`,
+          text: `"${existing.name}" filter updated.`,
         });
         return;
       }
 
-      const saved = await base44.entities.SavedFilter.create({
+      const created = await base44.entities.SavedFilter.create({
         user_id: user.id,
-        name: filterName,
         source: SAVED_SOURCE,
+        name: filterName,
         filters: normalizedFilters,
         notifications_enabled: true,
       });
-      setSavedFilters((prev) => dedupeSavedFilters([saved, ...prev]));
-      setAppliedSavedFilterId(saved.id);
+
+      setSavedFilters((prev) => dedupeSavedFilters([created, ...prev]));
+      setAppliedSavedFilterId(created.id);
       setFilterSaveNotice({
         kind: "success",
-        text: `"${saved.name || filterName}" save ho gaya. Apply Saved Filter me ye ek hi baar dikhega aur apply karne par matching notifications dikhengi.`,
+        text: `Saved filter "${filterName}".`,
       });
     } catch (error) {
+      console.error("[Notifications] Save filter failed:", error);
       setFilterSaveNotice({
         kind: "error",
-        text: error?.message || "Filter save nahi ho saka.",
+        text: error?.message || "Failed to save filter.",
       });
     } finally {
       saveFilterInFlight.current = false;
@@ -301,57 +317,58 @@ export default function Notifications() {
   }
 
   async function markAllRead() {
-    await base44.notifications.markAllRead();
-    await loadData();
+    setNotifs([]);
+    await base44.notifications.markAllRead().catch(() => undefined);
   }
 
   async function markRead(notification) {
     if (notification.is_read) return;
-    await base44.notifications.markRead(notification.id);
-    setNotifs((prev) =>
-      prev.map((item) =>
-        item.id === notification.id ? { ...item, is_read: true } : item
-      )
-    );
+    setNotifs((prev) => prev.filter((item) => item.id !== notification.id));
+    await base44.notifications.markRead(notification.id).catch(() => undefined);
   }
 
   async function deleteNotification(notification) {
-    await base44.entities.RailNotification.delete(notification.id);
+    await base44.entities.RailNotification.delete(notification.id).catch(() => undefined);
     setNotifs((prev) => prev.filter((item) => item.id !== notification.id));
   }
 
   return (
-    <div className="p-6 space-y-5 animate-fade-in">
-      <div className="flex items-center justify-between">
+    <div className="p-6 space-y-5 animate-fade-in max-w-7xl mx-auto">
+      {/* Top Title Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2">
-            <Bell className="h-5 w-5 text-primary" />
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-xl bg-primary/10 text-primary border border-primary/20">
+              <Bell className="h-5 w-5" />
+            </div>
             <h1 className="text-2xl font-bold text-foreground">Notifications</h1>
             {unreadCount > 0 && (
-              <span className="rounded-full bg-destructive px-2 py-0.5 text-xs font-bold text-white">
+              <span className="rounded-full bg-destructive px-2.5 py-0.5 text-xs font-bold text-white shadow-xs">
                 {unreadCount}
               </span>
             )}
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Inward and Outward movement notifications
+            Inward and Outward movement notifications & alerts
           </p>
         </div>
+
         {unreadCount > 0 && (
           <button
             type="button"
             onClick={markAllRead}
-            className="flex items-center gap-2 text-sm text-primary transition-colors hover:text-primary/80"
+            className="flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition-all hover:bg-primary/90 shadow-xs cursor-pointer"
           >
             <CheckCheck className="h-4 w-4" />
-            Mark all read
+            Mark all as read
           </button>
         )}
       </div>
 
-      <div className="space-y-4 rounded-xl border border-border bg-card p-4">
+      {/* Filter Control Section */}
+      <div className="space-y-4 rounded-2xl border border-border/80 bg-card p-5 shadow-xs">
         <div className="flex flex-wrap items-center gap-3">
-          <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Show</span>
+          <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Type</span>
           <CheckboxFilter checked={filters.showInward} onChange={(value) => setFilter("showInward", value)} label="Inward / Arrival" color="text-emerald-600" bgColor="bg-emerald-500/10" borderColor="border-emerald-500/30" />
           <CheckboxFilter checked={filters.showOutward} onChange={(value) => setFilter("showOutward", value)} label="Outward / Departure" color="text-blue-600" bgColor="bg-blue-500/10" borderColor="border-blue-500/30" />
         </div>
@@ -389,11 +406,11 @@ export default function Notifications() {
                   applyFilterState(saved.filters);
                   setFilterSaveNotice({
                     kind: "info",
-                    text: `"${saved.name}" apply ho gaya. Bell wale saved filters matching notifications dikhate hain.`,
+                    text: `"${saved.name}" applied.`,
                   });
                 }
               }}
-              className="rounded-lg border border-border bg-muted px-3 py-2 text-sm text-foreground outline-none"
+              className="rounded-xl border border-border bg-muted px-3 py-2 text-xs text-foreground outline-none cursor-pointer"
             >
               <option value="">Apply Saved Filter</option>
               {savedFilters.map((saved) => (
@@ -408,7 +425,7 @@ export default function Notifications() {
             type="button"
             onClick={saveCurrentFilter}
             disabled={savingFilter}
-            className="inline-flex items-center gap-2 rounded-lg border border-primary/30 px-3 py-2 text-xs text-primary transition-colors hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center gap-2 rounded-xl border border-primary/30 px-3 py-2 text-xs font-semibold text-primary transition-all hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-60 cursor-pointer"
           >
             <Save className="h-3.5 w-3.5" />
             {savingFilter ? "Saving..." : "Save Filter"}
@@ -418,7 +435,7 @@ export default function Notifications() {
             <button
               type="button"
               onClick={clearFilters}
-              className="rounded-lg border border-destructive/30 px-3 py-2 text-xs text-destructive transition-colors hover:bg-destructive/10"
+              className="rounded-xl border border-destructive/30 px-3 py-2 text-xs font-semibold text-destructive transition-all hover:bg-destructive/10 cursor-pointer"
             >
               Clear Filter
             </button>
@@ -427,62 +444,35 @@ export default function Notifications() {
 
         {filterSaveNotice && (
           <div
-            role="status"
-            className={`rounded-lg border px-3 py-2 text-xs ${
-              filterSaveNotice.kind === "success"
-                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
-                : filterSaveNotice.kind === "error"
-                  ? "border-destructive/30 bg-destructive/10 text-destructive"
-                  : "border-primary/30 bg-primary/10 text-primary"
+            className={`text-xs p-2.5 rounded-xl border ${
+              filterSaveNotice.kind === "error"
+                ? "border-red-500/30 bg-red-500/10 text-red-400"
+                : "border-blue-500/30 bg-blue-500/10 text-blue-400"
             }`}
           >
             {filterSaveNotice.text}
           </div>
         )}
 
-        {filters.stations.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-muted/40 p-2.5">
-            <span className="mr-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-              Active Stations:
-            </span>
-            {filters.stations.map((station) => (
-              <span key={station} className="inline-flex items-center gap-1 rounded border border-primary/20 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                {formatStationNameAndCode(station)}
-                <button
-                  type="button"
-                  onClick={() =>
-                    setFilter(
-                      "stations",
-                      filters.stations.filter((item) => item !== station)
-                    )
-                  }
-                  className="ml-0.5 font-bold hover:text-destructive"
-                >
-                  x
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
-
         <div className="text-xs text-muted-foreground">
-          Showing <span className="font-semibold text-foreground">{filtered.length}</span> of {notifs.length} notifications
+          Active Notifications: <span className="font-semibold text-foreground">{displayNotifs.length}</span>
         </div>
       </div>
 
-      <div className="space-y-2">
+      {/* Notifications List */}
+      <div className="space-y-3">
         {loading ? (
           [...Array(5)].map((_, index) => (
-            <div key={index} className="h-20 animate-pulse rounded-xl bg-muted" />
+            <div key={index} className="h-24 animate-pulse rounded-2xl bg-card border border-border" />
           ))
-        ) : filtered.length === 0 ? (
-          <div className="py-16 text-center text-muted-foreground">
-            <Bell className="mx-auto mb-3 h-10 w-10 opacity-30" />
-            <p className="text-sm">No notifications match your filters</p>
-            <p className="mt-1 text-xs">Try adjusting the saved filter set above</p>
+        ) : displayNotifs.length === 0 ? (
+          <div className="py-16 text-center text-muted-foreground bg-card border border-border/80 rounded-2xl p-8">
+            <Bell className="mx-auto mb-3 h-10 w-10 opacity-30 text-primary" />
+            <p className="text-sm font-bold text-foreground">No active notifications</p>
+            <p className="mt-1 text-xs text-muted-foreground">All notifications have been marked as read.</p>
           </div>
         ) : (
-          filtered.map((notification) => {
+          displayNotifs.map((notification) => {
             const config = TYPE_CONFIG[notification.type] || TYPE_CONFIG.Inward;
             const IconComp = config.icon;
             const relatedRakes = movementsOfNotification(notification);
@@ -490,37 +480,32 @@ export default function Notifications() {
             return (
               <div
                 key={notification.id}
-                onClick={() => markRead(notification)}
-                className={`flex cursor-pointer items-start gap-4 rounded-xl border p-4 transition-all ${
-                  !notification.is_read
-                    ? "border-primary/20 bg-primary/5 hover:bg-primary/10"
-                    : "border-border bg-card hover:bg-muted/30"
-                }`}
+                className="flex items-start gap-4 rounded-2xl border border-primary/30 bg-primary/5 hover:bg-primary/10 transition-all shadow-xs p-4"
               >
-                <div className={`mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg ${config.bg}`}>
+                <div className={`mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl ${config.bg}`}>
                   <IconComp className={`h-4 w-4 ${config.color}`} />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold text-foreground">{notification.title}</span>
-                    {!notification.is_read && <span className="h-2 w-2 flex-shrink-0 rounded-full bg-primary" />}
-                    <span className={`ml-auto rounded-full border px-2 py-0.5 text-xs ${
+                    <span className="text-sm font-bold text-foreground">{notification.title}</span>
+                    <span className="h-2 w-2 flex-shrink-0 rounded-full bg-primary" />
+                    <span className={`ml-auto rounded-full border px-2.5 py-0.5 text-xs font-semibold ${
                       notification.severity === "error"
-                        ? "border-red-500/20 bg-red-500/10 text-red-400"
+                        ? "border-red-500/30 bg-red-500/10 text-red-400"
                         : notification.severity === "warning"
-                          ? "border-amber-500/20 bg-amber-500/10 text-amber-400"
+                          ? "border-amber-500/30 bg-amber-500/10 text-amber-400"
                           : "border-border bg-muted text-muted-foreground"
                     }`}>
                       {notification.severity || "info"}
                     </span>
                   </div>
-                  <p className="mt-2 whitespace-pre-line text-sm leading-6 text-muted-foreground">{notification.message}</p>
-                  <div className="mt-2 flex flex-wrap items-center gap-3">
-                    <span className="rounded border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                  <p className="mt-2 whitespace-pre-line text-xs leading-6 text-muted-foreground">{notification.message}</p>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <span className="rounded-lg border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
                       {config.label}
                     </span>
                     {notification.related_division && (
-                      <span className="rounded border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                      <span className="rounded-lg border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
                         {getDivisionName(notification.related_division)} ({notification.related_division})
                       </span>
                     )}
@@ -530,31 +515,28 @@ export default function Notifications() {
                       </span>
                     )}
                     {notification.created_date && (
-                      <span className="text-xs text-muted-foreground">
+                      <span className="text-xs text-muted-foreground ml-auto">
                         {new Date(notification.created_date).toLocaleString("en-IN")}
                       </span>
                     )}
                     {relatedRakes.length > 1 && (
                       <button
                         type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggleExpanded(notification.id);
-                        }}
-                        className="text-xs font-medium text-primary hover:underline"
+                        onClick={() => toggleExpanded(notification.id)}
+                        className="text-xs font-semibold text-primary hover:underline cursor-pointer"
                       >
-                        {isExpanded ? "Hide" : `View ${relatedRakes.length} rakes`}
+                        {isExpanded ? "Hide rakes" : `View ${relatedRakes.length} rakes`}
                       </button>
                     )}
                   </div>
                   {isExpanded && relatedRakes.length > 1 && (
-                    <div className="mt-3 space-y-1 rounded-lg border border-border bg-muted/30 p-2">
+                    <div className="mt-3 space-y-1 rounded-xl border border-border bg-muted/40 p-3">
                       {relatedRakes.map((rake, index) => (
                         <div
                           key={rake.id || rake.odr_number || index}
                           className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
                         >
-                          <span className="font-mono text-foreground">{rake.odr_number || "-"}</span>
+                          <span className="font-mono text-foreground font-semibold">{rake.odr_number || "-"}</span>
                           <span>{rake.commodity_name || rake.commodity_code || rake.commodity || "-"}</span>
                           <span>{rake.company_name || rake.company || rake.company_code || "-"}</span>
                         </div>
@@ -562,16 +544,26 @@ export default function Notifications() {
                     </div>
                   )}
                 </div>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    deleteNotification(notification);
-                  }}
-                  className="flex-shrink-0 p-1 text-muted-foreground transition-colors hover:text-red-400"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => markRead(notification)}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl border border-primary/30 bg-primary/10 text-xs font-bold text-primary hover:bg-primary/20 transition-all cursor-pointer shadow-2xs"
+                    title="Mark as Read"
+                  >
+                    <Check className="h-3.5 w-3.5 text-primary" />
+                    <span>Mark Read</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteNotification(notification)}
+                    className="p-1.5 rounded-xl text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                    title="Delete Notification"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             );
           })
@@ -579,12 +571,12 @@ export default function Notifications() {
       </div>
 
       {!loading && hasMore && (
-        <div className="flex justify-center">
+        <div className="flex justify-center pt-2">
           <button
             type="button"
             onClick={loadMore}
             disabled={loadingMore}
-            className="rounded-lg border border-border bg-muted px-4 py-2 text-xs text-foreground hover:bg-muted/80 disabled:opacity-50"
+            className="rounded-xl border border-border bg-card px-5 py-2.5 text-xs font-semibold text-foreground hover:bg-muted disabled:opacity-50 transition-all shadow-xs cursor-pointer"
           >
             {loadingMore ? "Loading..." : "Load More Notifications"}
           </button>
@@ -596,7 +588,7 @@ export default function Notifications() {
 
 function CheckboxFilter({ checked, onChange, label, color, bgColor, borderColor }) {
   return (
-    <label className={`flex cursor-pointer select-none items-center gap-2.5 rounded-lg border px-3 py-2 transition-all ${
+    <label className={`flex cursor-pointer select-none items-center gap-2.5 rounded-xl border px-3 py-2 transition-all ${
       checked ? `${bgColor} ${borderColor}` : "border-border bg-muted opacity-50"
     }`}>
       <input
@@ -605,7 +597,7 @@ function CheckboxFilter({ checked, onChange, label, color, bgColor, borderColor 
         onChange={(event) => onChange(event.target.checked)}
         className="h-4 w-4 cursor-pointer rounded accent-current"
       />
-      <span className={`text-xs font-medium ${checked ? color : "text-muted-foreground"}`}>{label}</span>
+      <span className={`text-xs font-bold ${checked ? color : "text-muted-foreground"}`}>{label}</span>
     </label>
   );
 }
@@ -650,70 +642,56 @@ function movementMatchesFilters(movement, filters) {
   );
 }
 
-function isInwardType(type) {
-  return INWARD_TYPES.includes(type);
+function dedupeSavedFilters(items) {
+  const seen = new Set();
+  return (items || []).filter((item) => {
+    const key = `${item.name || ""}|${savedFilterSignature(item.filters)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
-function isOutwardType(type) {
-  return OUTWARD_TYPES.includes(type);
+function savedFilterSignature(filterData) {
+  if (!filterData || typeof filterData !== "object") return "";
+  const obj = {
+    showInward: filterData.showInward ?? true,
+    showOutward: filterData.showOutward ?? true,
+    zones: (filterData.zones || []).slice().sort(),
+    divisions: (filterData.divisions || []).slice().sort(),
+    states: (filterData.states || []).slice().sort(),
+    districts: (filterData.districts || []).slice().sort(),
+    stations: (filterData.stations || []).slice().sort(),
+    commodities: (filterData.commodities || []).slice().sort(),
+    rakeCmdts: (filterData.rakeCmdts || []).slice().sort(),
+  };
+  return JSON.stringify(obj);
 }
 
-function readRaw(record, ...keys) {
-  for (const key of keys) {
-    const value = record?.raw_data?.[key] ?? record?.[key];
-    if (value !== undefined && value !== null && String(value).trim() !== "") return value;
-  }
-  return "";
-}
-
-function getCommodityCode(record) {
-  return String(record.commodity_code || record.commodity || readRaw(record, "CMDT", "Commodity") || "").trim();
-}
-
-function buildFilterName(filters) {
-  const parts = [
-    ...filters.divisions,
-    ...filters.states,
-    ...filters.districts,
-    ...filters.stations,
-    ...filters.commodities,
-    ...filters.rakeCmdts,
-  ].filter(Boolean);
-  return parts.slice(0, 4).join(" + ") || "Notification Filter";
-}
-
-function normalizeNotificationFilters(filters = {}) {
-  const normalizeList = (value) =>
-    [...new Set(normalizeMultiValue(value).map((item) => String(item).trim()).filter(Boolean))]
-      .sort((left, right) => left.localeCompare(right));
-
+function normalizeNotificationFilters(source) {
   return {
-    showInward: filters.showInward ?? true,
-    showOutward: filters.showOutward ?? true,
-    zones: normalizeList(filters.zones ?? filters.filterZone),
-    divisions: normalizeList(filters.divisions ?? filters.filterDivision),
-    states: normalizeList(filters.states),
-    districts: normalizeList(filters.districts),
-    stations: normalizeList(
-      filters.stations ??
-        filters.selectedStations ??
-        filters.selectedInwardStations
-    ),
-    commodities: normalizeList(filters.commodities ?? filters.filterComm),
-    rakeCmdts: normalizeList(filters.rakeCmdts ?? filters.filterRakeCmdt),
+    showInward: source.showInward ?? true,
+    showOutward: source.showOutward ?? true,
+    zones: Array.isArray(source.zones) ? source.zones : [],
+    divisions: Array.isArray(source.divisions) ? source.divisions : [],
+    states: Array.isArray(source.states) ? source.states : [],
+    districts: Array.isArray(source.districts) ? source.districts : [],
+    stations: Array.isArray(source.stations) ? source.stations : [],
+    commodities: Array.isArray(source.commodities) ? source.commodities : [],
+    rakeCmdts: Array.isArray(source.rakeCmdts) ? source.rakeCmdts : [],
   };
 }
 
-function savedFilterSignature(filters = {}) {
-  return JSON.stringify(normalizeNotificationFilters(filters));
+function buildFilterName(filt) {
+  const parts = [];
+  if (filt.zones?.length) parts.push(`Z:${filt.zones.join(",")}`);
+  if (filt.divisions?.length) parts.push(`Div:${filt.divisions.join(",")}`);
+  if (filt.stations?.length) parts.push(`Stn:${filt.stations.join(",")}`);
+  if (filt.commodities?.length) parts.push(`Cmdt:${filt.commodities.join(",")}`);
+  if (filt.rakeCmdts?.length) parts.push(`Rake:${filt.rakeCmdts.join(",")}`);
+  return parts.length ? parts.join(" | ") : "All Notifications";
 }
 
-function dedupeSavedFilters(savedFilters = []) {
-  const seen = new Set();
-  return savedFilters.filter((savedFilter) => {
-    const signature = savedFilterSignature(savedFilter.filters);
-    if (seen.has(signature)) return false;
-    seen.add(signature);
-    return true;
-  });
+function getCommodityCode(movement) {
+  return movement.commodity_code || movement.commodity || movement.raw_data?.CMDT || "";
 }

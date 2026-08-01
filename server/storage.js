@@ -246,6 +246,23 @@ function commodityColumnValues(record) {
   );
 }
 
+const INCREMENTAL_ENRICHMENT_COLUMN_NAMES = [
+  "business_key",
+  "record_hash",
+  "first_seen_upload",
+  "last_seen_upload",
+  "last_action",
+  "active_status",
+];
+
+function incrementalColumnValues(record) {
+  return INCREMENTAL_ENRICHMENT_COLUMN_NAMES.map((columnName) =>
+    record?.[columnName] == null || record?.[columnName] === ""
+      ? columnName === "active_status" ? "ACTIVE" : null
+      : String(record[columnName])
+  );
+}
+
 async function ensureStationEnrichmentColumns(tableName) {
   for (const columnName of STATION_ENRICHMENT_COLUMN_NAMES) {
     await pool.query(
@@ -253,6 +270,7 @@ async function ensureStationEnrichmentColumns(tableName) {
     );
   }
 }
+
 
 async function createEntityTable(tableName) {
   // Phase-2 masters use columnar schema for fast search + indexing.
@@ -351,6 +369,25 @@ async function createEntityTable(tableName) {
         `ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS ${columnName} TEXT`
       );
     }
+
+    // Incremental engine columns
+    for (const columnName of INCREMENTAL_ENRICHMENT_COLUMN_NAMES) {
+      await pool.query(
+        `ALTER TABLE ${tableName} ADD COLUMN IF NOT EXISTS ${columnName} TEXT`
+      );
+    }
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS ${tableName}_business_key_idx ON ${tableName} (business_key)`
+    );
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS ${tableName}_first_seen_upload_idx ON ${tableName} (first_seen_upload)`
+    );
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS ${tableName}_last_seen_upload_idx ON ${tableName} (last_seen_upload)`
+    );
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS ${tableName}_active_status_idx ON ${tableName} (active_status)`
+    );
 
     // Indexes
     await pool.query(
@@ -840,6 +877,7 @@ export async function createRecord(entityName, record) {
     const allColumns = [
       ...STATION_ENRICHMENT_COLUMN_NAMES,
       ...COMMODITY_ENRICHMENT_COLUMN_NAMES,
+      ...INCREMENTAL_ENRICHMENT_COLUMN_NAMES,
       ...dateColumns,
     ];
 
@@ -869,6 +907,7 @@ export async function createRecord(entityName, record) {
         created.created_date || nowIso(),
         ...stationColumnValues(created),
         ...commodityColumnValues(created),
+        ...incrementalColumnValues(created),
         ...dateValues,
       ]
     );
@@ -963,6 +1002,49 @@ export async function createRecords(entityName, records) {
   return created;
 }
 
+export async function getExistingRecordsByBusinessKeys(entityName, businessKeys) {
+  assertEntity(entityName);
+  const keys = Array.isArray(businessKeys) ? businessKeys.filter(Boolean) : [];
+  const resultMap = new Map();
+  if (keys.length === 0) return resultMap;
+
+  const tableName = ENTITY_TABLES[entityName];
+  if (activeStorage !== "postgres") {
+    const db = await readDb();
+    const list = Array.isArray(db[entityName]) ? db[entityName] : [];
+    const keysSet = new Set(keys);
+    for (const record of list) {
+      const bKey = record.business_key || record.data?.business_key;
+      if (bKey && keysSet.has(bKey)) {
+        resultMap.set(bKey, record);
+      }
+    }
+    return resultMap;
+  }
+
+  const uniqueKeys = [...new Set(keys)];
+  const chunkSize = 5000;
+  for (let i = 0; i < uniqueKeys.length; i += chunkSize) {
+    const chunk = uniqueKeys.slice(i, i + chunkSize);
+    const result = await pool.query(
+      `SELECT id, data, business_key, record_hash, first_seen_upload, last_seen_upload, last_action, active_status
+       FROM ${tableName}
+       WHERE business_key = ANY($1::text[]) OR (data->>'business_key') = ANY($1::text[])`,
+      [chunk]
+    );
+
+    for (const row of result.rows) {
+      const record = fromRow(row);
+      const bKey = row.business_key || record.business_key || record.data?.business_key;
+      if (bKey) {
+        resultMap.set(bKey, { ...record, ...row, id: String(row.id) });
+      }
+    }
+  }
+
+  return resultMap;
+}
+
 export async function updateRecord(entityName, id, fields) {
   assertEntity(entityName);
   if (activeStorage !== "postgres")
@@ -986,6 +1068,7 @@ export async function updateRecord(entityName, id, fields) {
     const allColumns = [
       ...STATION_ENRICHMENT_COLUMN_NAMES,
       ...COMMODITY_ENRICHMENT_COLUMN_NAMES,
+      ...INCREMENTAL_ENRICHMENT_COLUMN_NAMES,
       ...dateColumns,
     ];
 
@@ -1015,6 +1098,7 @@ export async function updateRecord(entityName, id, fields) {
         updated.created_date || nowIso(),
         ...stationColumnValues(updated),
         ...commodityColumnValues(updated),
+        ...incrementalColumnValues(updated),
         ...dateValues,
       ]
     );
@@ -1111,6 +1195,42 @@ export async function deleteRecord(entityName, id) {
   return { deletedId: id, count: result.rowCount };
 }
 
+export async function getNextUploadVersion(fileType, zone) {
+  const uploads = await listRecords("UploadLog", {
+    sort: "-upload_time",
+    limit: 500,
+  });
+
+  const matchingUploads = uploads.filter((u) => {
+    const type = u.file_type || u.data?.file_type;
+    if (type !== fileType) return false;
+    if (!zone) return true;
+    const uZone = String(u.zone || u.data?.zone || "").toUpperCase();
+    return !uZone || uZone === String(zone).toUpperCase();
+  });
+
+  let maxVersion = 0;
+  let previousBatchId = null;
+
+  for (const upload of matchingUploads) {
+    const v = Number(upload.version_number || upload.data?.version_number || 0);
+    if (v > maxVersion) {
+      maxVersion = v;
+      previousBatchId = upload.batch_id || upload.data?.batch_id || null;
+    }
+  }
+
+  if (maxVersion === 0 && matchingUploads.length > 0) {
+    maxVersion = matchingUploads.length;
+    previousBatchId = matchingUploads[0]?.batch_id || null;
+  }
+
+  return {
+    version_number: maxVersion + 1,
+    previous_version_batch_id: previousBatchId,
+  };
+}
+
 export async function listUploadHistory({ limit = 100 } = {}) {
   const parsedLimit = Number.parseInt(limit, 10);
   const records = await listRecords("UploadLog", {
@@ -1126,6 +1246,17 @@ function hasBatchId(record, batchId) {
     String(record?.upload_batch_id || "") === String(batchId) ||
     String(record?.batch_id || "") === String(batchId)
   );
+}
+
+function isFirstSeenBatch(record, batchId) {
+  const firstSeen =
+    record?.first_seen_upload ||
+    record?.data?.first_seen_upload ||
+    record?.upload_batch_id ||
+    record?.batch_id ||
+    record?.data?.upload_batch_id ||
+    record?.data?.batch_id;
+  return String(firstSeen || "") === String(batchId);
 }
 
 function notificationHistoryMatchesBatch(record, batchId) {
@@ -1181,11 +1312,27 @@ export async function deleteUploadBatch(identifier) {
     db.FreightMovement = (Array.isArray(db.FreightMovement)
       ? db.FreightMovement
       : []
-    ).filter((record) => !hasBatchId(record, batchId));
+    )
+      .filter((record) => !isFirstSeenBatch(record, batchId))
+      .map((record) => {
+        if (String(record?.last_seen_upload) === batchId && String(record?.first_seen_upload) !== batchId) {
+          return { ...record, last_seen_upload: record.first_seen_upload || "LEGACY" };
+        }
+        return record;
+      });
+
     db.MaturedIndent = (Array.isArray(db.MaturedIndent)
       ? db.MaturedIndent
       : []
-    ).filter((record) => !hasBatchId(record, batchId));
+    )
+      .filter((record) => !isFirstSeenBatch(record, batchId))
+      .map((record) => {
+        if (String(record?.last_seen_upload) === batchId && String(record?.first_seen_upload) !== batchId) {
+          return { ...record, last_seen_upload: record.first_seen_upload || "LEGACY" };
+        }
+        return record;
+      });
+
     db.RailNotification = (Array.isArray(db.RailNotification)
       ? db.RailNotification
       : []
@@ -1247,12 +1394,29 @@ export async function deleteUploadBatch(identifier) {
     const batchId = String(uploadLog.batch_id);
     const freightResult = await client.query(
       `DELETE FROM freight_movements
-       WHERE data->>'upload_batch_id' = $1 OR data->>'batch_id' = $1`,
+       WHERE first_seen_upload = $1
+          OR (first_seen_upload IS NULL AND (data->>'first_seen_upload' = $1 OR data->>'upload_batch_id' = $1 OR data->>'batch_id' = $1))`,
       [batchId]
     );
+    await client.query(
+      `UPDATE freight_movements
+       SET last_seen_upload = COALESCE(first_seen_upload, 'LEGACY'),
+           data = jsonb_set(data, '{last_seen_upload}', to_jsonb(COALESCE(first_seen_upload, 'LEGACY')))
+       WHERE last_seen_upload = $1 AND (first_seen_upload IS DISTINCT FROM $1)`,
+      [batchId]
+    );
+
     const indentResult = await client.query(
       `DELETE FROM matured_indents
-       WHERE data->>'upload_batch_id' = $1 OR data->>'batch_id' = $1`,
+       WHERE first_seen_upload = $1
+          OR (first_seen_upload IS NULL AND (data->>'first_seen_upload' = $1 OR data->>'upload_batch_id' = $1 OR data->>'batch_id' = $1))`,
+      [batchId]
+    );
+    await client.query(
+      `UPDATE matured_indents
+       SET last_seen_upload = COALESCE(first_seen_upload, 'LEGACY'),
+           data = jsonb_set(data, '{last_seen_upload}', to_jsonb(COALESCE(first_seen_upload, 'LEGACY')))
+       WHERE last_seen_upload = $1 AND (first_seen_upload IS DISTINCT FROM $1)`,
       [batchId]
     );
     const notificationResult = await client.query(
@@ -1316,7 +1480,6 @@ export async function markAllNotificationsRead(userId) {
     const db = await readDb();
     let updated = 0;
     db.RailNotification = (db.RailNotification || []).map((item) => {
-      if (!["inward", "outward", "adminreview"].includes(String(item.type || "").toLowerCase())) return item;
       const readBy = Array.isArray(item.read_by) ? item.read_by : [];
       if (readBy.includes(normalizedUserId)) return item;
       updated += 1;
@@ -1327,10 +1490,23 @@ export async function markAllNotificationsRead(userId) {
   }
   const result = await pool.query(
     `UPDATE rail_notifications
-     SET data = jsonb_set(data, '{read_by}', COALESCE(data->'read_by', '[]'::jsonb) || to_jsonb(ARRAY[$1]::text[]), true),
+     SET data = jsonb_set(
+           data,
+           '{read_by}',
+           CASE
+             WHEN jsonb_typeof(data->'read_by') = 'array'
+             THEN data->'read_by' || to_jsonb($1::text)
+             ELSE jsonb_build_array($1::text)
+           END,
+           true
+         ),
          updated_date = NOW()
-     WHERE LOWER(data->>'type') IN ('inward', 'outward', 'adminreview')
-       AND NOT COALESCE(data->'read_by', '[]'::jsonb) @> to_jsonb(ARRAY[$1]::text[])`,
+     WHERE NOT (
+       CASE
+         WHEN jsonb_typeof(data->'read_by') = 'array' THEN data->'read_by'
+         ELSE '[]'::jsonb
+       END @> to_jsonb(ARRAY[$1]::text[])
+     )`,
     [normalizedUserId]
   );
   return result.rowCount;

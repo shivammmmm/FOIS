@@ -76,7 +76,7 @@ function withDefaults(entityName, record) {
   return next;
 }
 
-export async function listRecords(entityName, { sort, limit, filter } = {}) {
+export async function listRecords(entityName, { sort, limit, offset = 0, filter } = {}) {
   assertEntity(entityName);
 
   const db = await readDb();
@@ -84,7 +84,11 @@ export async function listRecords(entityName, { sort, limit, filter } = {}) {
   const sorted = sortRecords(records, sort);
   const parsedLimit = Number.parseInt(limit, 10);
 
-  return Number.isFinite(parsedLimit) ? sorted.slice(0, parsedLimit) : sorted;
+  const parsedOffset = Number.parseInt(offset, 10);
+  const safeOffset = Number.isFinite(parsedOffset) ? Math.max(parsedOffset, 0) : 0;
+  return Number.isFinite(parsedLimit)
+    ? sorted.slice(safeOffset, safeOffset + parsedLimit)
+    : sorted.slice(safeOffset);
 }
 
 export async function createRecord(entityName, record) {

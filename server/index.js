@@ -1183,6 +1183,7 @@ app.post(
       const isBinaryUpload = Buffer.isBuffer(req.body);
       const fileName = isBinaryUpload ? req.query.fileName : req.body?.fileName;
       const fileType = isBinaryUpload ? req.query.fileType : req.body?.fileType;
+      const uploadSource = (isBinaryUpload ? req.query.source : req.body?.source) || "Excel";
       const fileBase64 = isBinaryUpload ? null : req.body?.fileBase64;
       if (!fileName || !fileType || (!isBinaryUpload && !fileBase64)) {
         return res
@@ -1423,6 +1424,7 @@ app.post(
         original_file_name: fileName,
         file_name: fileName,
         file_type: fileType,
+        source: uploadSource,
         file_hash: fileHash,
         uploaded_by: req.auth?.username || "Admin",
         uploaded_at: uploadTime,
