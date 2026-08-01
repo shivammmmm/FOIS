@@ -503,6 +503,10 @@ async function createMovementPreferenceNotifications(records, batchId) {
   const groups = new Map();
 
   for (const record of Array.isArray(records) ? records : []) {
+    if (record.is_duplicate) {
+      console.info('[NotificationDelivery] skipped duplicate record for notifications', { batchId, odr: record.odr_number });
+      continue;
+    }
     const movementType = record.movement_type;
     if (!['Inward', 'Outward'].includes(movementType)) {
       console.info('[NotificationDelivery] skipped record without valid movement type', { batchId, record_id: record.id });
@@ -2072,9 +2076,7 @@ app.get("/api/notifications", requireAuth, async (req, res, next) => {
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
     const offset = (page - 1) * limit;
-    const visibleTypes = ADMIN_ROLES.includes(req.auth?.role)
-      ? ["Inward", "Outward", "AdminReview"]
-      : ["Inward", "Outward"];
+    const visibleTypes = ["Inward", "Outward"];
     const rows = await listRecords("RailNotification", {
       filter: { type: visibleTypes },
       sort: "-created_date",

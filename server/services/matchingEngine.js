@@ -441,21 +441,20 @@ export async function runMatchingEngine({
     for (let start = 0; emitNotifications && start < notificationEvents.length; start += 10) {
       await Promise.all(notificationEvents.slice(start, start + 10).map(async ({ item, odr }) => {
         const isManual = item.status === "Manual Review";
+        if (isManual) return;
         await createNotification({
           movement_reference: `MATCH:${item.odr_id}:${item.matured_id || "REVIEW"}`,
           station_code: odr?.station_from || null,
-          notification_type: isManual ? "ManualReviewRequired" : item.status === "Partial" ? "PartialSupplyUpdated" : item.status === "Completed" ? "DemandCompleted" : "DemandMatured",
-          type: isManual
-            ? "AdminReview"
-            : ["Inward", "Outward"].includes(odr?.raw?.movement_type)
-              ? odr.raw.movement_type
-              : "Inward",
-          title: isManual ? "Manual Review Required" : item.status === "Partial" ? "Partial Supply Updated" : item.status === "Completed" ? "Demand Completed" : "Demand Matured",
-          message: isManual ? `ODR ${odr?.raw?.odr_number || ""} has an ambiguous match.` : item.status === "Completed" ? `Demand ${odr?.raw?.odr_number || ""} supply is complete.` : `ODR ${odr?.raw?.odr_number || ""} matched successfully.`,
+          notification_type: item.status === "Partial" ? "PartialSupplyUpdated" : item.status === "Completed" ? "DemandCompleted" : "DemandMatured",
+          type: ["Inward", "Outward"].includes(odr?.raw?.movement_type)
+            ? odr.raw.movement_type
+            : "Inward",
+          title: item.status === "Partial" ? "Partial Supply Updated" : item.status === "Completed" ? "Demand Completed" : "Demand Matured",
+          message: item.status === "Completed" ? `Demand ${odr?.raw?.odr_number || ""} supply is complete.` : `ODR ${odr?.raw?.odr_number || ""} matched successfully.`,
           related_odr: odr?.raw?.odr_number || null,
           related_division: odr?.raw?.division || null,
           batch_id: odr?.batch || null,
-          data: { admin_only: isManual, match_id: item.match_id },
+          data: { match_id: item.match_id },
         }).catch((error) => console.error("[Matching] notification failed", error?.message));
       }));
     }
