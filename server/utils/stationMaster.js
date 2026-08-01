@@ -78,42 +78,71 @@ export async function bulkLookupStationMasters(codes) {
   const unique = [...new Set(codes.map(normalizeCode).filter(Boolean))];
   if (unique.length === 0) return {};
 
-  // Ensure table exists (defensive; storage.js should create it).
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS station_master (
-      id TEXT PRIMARY KEY,
-      station_code TEXT UNIQUE NOT NULL,
-      station_name TEXT NOT NULL,
-      district TEXT,
-      state TEXT,
-      division TEXT,
-      zone TEXT,
-      is_active BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE(station_code)
-    )
-  `);
-
-  const result = await pool.query(
-    `SELECT station_code, station_name, district, state, division, zone, is_active
-     FROM station_master
-     WHERE station_code = ANY($1::text[])`,
-    [unique]
-  );
-
   const map = {};
-  for (const row of result.rows) {
-    map[row.station_code] = {
-      station_code: row.station_code,
-      station_name: row.station_name,
-      district: row.district,
-      state: row.state,
-      division: row.division,
-      zone: row.zone,
-      is_active: row.is_active,
-    };
+
+  try {
+    // Ensure table exists (defensive; storage.js should create it).
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS station_master (
+        id TEXT PRIMARY KEY,
+        station_code TEXT UNIQUE NOT NULL,
+        station_name TEXT NOT NULL,
+        district TEXT,
+        state TEXT,
+        division TEXT,
+        zone TEXT,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(station_code)
+      )
+    `);
+
+    const result = await pool.query(
+      `SELECT station_code, station_name, district, state, division, zone, is_active
+       FROM station_master
+       WHERE station_code = ANY($1::text[])`,
+      [unique]
+    );
+
+    for (const row of result.rows) {
+      map[row.station_code] = {
+        station_code: row.station_code,
+        station_name: row.station_name,
+        district: row.district,
+        state: row.state,
+        division: row.division,
+        zone: row.zone,
+        is_active: row.is_active,
+      };
+    }
+  } catch (_err) {
+    // Ignore Postgres failure when running in JSON DB mode
   }
+
+  // Fallback / complement with JSON storage (db.json)
+  try {
+    const { readDb } = await import("../db.js");
+    const db = await readDb();
+    const stations = Array.isArray(db.station_master) ? db.station_master : [];
+    for (const row of stations) {
+      const code = normalizeCode(row.station_code || row.code);
+      if (unique.includes(code) && !map[code]) {
+        map[code] = {
+          station_code: code,
+          station_name: row.station_name || row.name || code,
+          district: row.district || null,
+          state: row.state || null,
+          division: row.division || null,
+          zone: row.zone || null,
+          is_active: row.is_active !== false,
+        };
+      }
+    }
+  } catch (_err) {
+    // Ignore JSON fallback error if any
+  }
+
   return map;
 }
 
