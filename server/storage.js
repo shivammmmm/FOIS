@@ -726,13 +726,42 @@ export async function createUser(user) {
         next.created_date,
       ]
     );
-    return result.rows[0];
+    const createdUser = result.rows[0];
+    if (next.email && String(next.email).includes("@")) {
+      await createRecord("UserNotificationPreference", {
+        user_id: createdUser.id,
+        email: next.email,
+        email_enabled: true,
+        inward_enabled: true,
+        outward_enabled: true,
+        zones: [],
+        divisions: [],
+        stations: [],
+        commodities: [],
+        rakeCmdts: [],
+      }).catch(() => undefined);
+    }
+    return createdUser;
   }
 
   const db = await readDb();
   const users = Array.isArray(db.Users) ? db.Users : [];
   db.Users = [...users, next];
   await writeDb(db);
+  if (next.email && String(next.email).includes("@")) {
+    await createRecord("UserNotificationPreference", {
+      user_id: next.id,
+      email: next.email,
+      email_enabled: true,
+      inward_enabled: true,
+      outward_enabled: true,
+      zones: [],
+      divisions: [],
+      stations: [],
+      commodities: [],
+      rakeCmdts: [],
+    }).catch(() => undefined);
+  }
   return next;
 }
 

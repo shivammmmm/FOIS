@@ -343,7 +343,7 @@ const port = process.env.PORT || 3000;
 
 const localUser = {
   id: "local-user",
-  email: "local@example.com",
+  email: process.env.ADMIN_EMAIL || "shivampa345@gmail.com",
   full_name: "Local User",
   role: "admin",
 };
@@ -355,7 +355,7 @@ const pendingUploadChunks = new Map();
 
 const SUPER_ADMIN = {
   username: "6266782930",
-  email: "6266782930",
+  email: process.env.ADMIN_EMAIL || "shivampa345@gmail.com",
   password: "123456",
 };
 
