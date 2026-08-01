@@ -76,14 +76,41 @@ export function parsePastedTextToAOA(rawText) {
     parseLine = (line) => line.split(/\s{2,}/).map((cell) => cell.trim());
   }
 
-  const rows = lines.map(parseLine);
+  const rawRows = lines.map(parseLine);
+  // Filter out FOIS Web Portal filter search box rows (e.g. Searc, Search..., fn)
+  const rows = rawRows.filter((row) => {
+    const searchCells = row.filter((cell) => {
+      const norm = String(cell || '').trim().toLowerCase();
+      return norm.startsWith('searc') || norm === 'fn' || norm === 'search...' || norm === 'search';
+    });
+    return searchCells.length < 2;
+  });
+
   const parsedRowCount = rows.length > 1 ? rows.length - 1 : 0;
 
   return { rows, detectedFormat, charCount, lineCount, parsedRowCount };
 }
 
+export const DEFAULT_ODR_HEADERS = [
+  'S.NO.', 'DVSN', 'STTN FROM', 'NO.', 'DATE', 'TIME',
+  'EXPECTED LOADING DATE', 'CNSR', 'CNSG', 'CMDT',
+  'TT', 'PC', 'PBF', 'VIA', 'RAKE CMDT',
+  'DSTN', 'TYPE', 'INDENTED UNTS', 'INDENTED 8W', 'OTSG UNTS',
+  'OTSG 8W', 'SUPPLIED UNTS', 'SUPPLIED TIME'
+];
+
+export const DEFAULT_MATURED_HEADERS = [
+  'S.NO.', 'DVSN', 'STTN FROM', 'DEMAND NO.', 'DEMAND DATE', 'DEMAND TIME',
+  'EXPECTED LOADING DATE', 'CONSIGNOR', 'CNSG', 'CMDT',
+  'TT', 'PC', 'PBF', 'VIA', 'RAKE CMDT',
+  'DSTN', 'TYPE', 'INDENTED UNTS', 'INDENTED 8W', 'OTSG UNTS',
+  'OTSG 8W', 'SUPPLIED UNTS', 'SUPPLIED TIME'
+];
+
 /**
  * Validate presence of FOIS mandatory header columns in parsed rows.
+ * If header columns are missing, automatically auto-inject standard FOIS header row
+ * so that raw pasted data parses seamlessly without user intervention.
  */
 export function validatePastedFoisHeaders(rows, fileType = 'ODR') {
   if (!Array.isArray(rows) || rows.length === 0) {
@@ -96,25 +123,31 @@ export function validatePastedFoisHeaders(rows, fileType = 'ODR') {
     ? ['NO.', 'NO'] 
     : ['NO.', 'NO', 'DEMAND NO.', 'DEMAND NO', 'INDENT NO.', 'INDENT NO'];
 
-  let foundHeader = false;
+  let foundHeaderIndex = -1;
 
-  for (const row of rows) {
-    const normalizedCells = row.map((cell) => String(cell || '').trim().toUpperCase());
+  for (let i = 0; i < rows.length; i += 1) {
+    const normalizedCells = rows[i].map((cell) => String(cell || '').trim().toUpperCase());
     const hasSNo = baseAliases.some((alias) => normalizedCells.includes(alias));
     const hasDvsn = dvsnAliases.some((alias) => normalizedCells.includes(alias));
     const hasNo = numberAliases.some((alias) => normalizedCells.includes(alias));
 
     if (hasSNo && hasDvsn && hasNo) {
-      foundHeader = true;
+      foundHeaderIndex = i;
       break;
     }
   }
 
-  if (!foundHeader) {
-    throw new Error(
-      `Missing mandatory FOIS header columns (e.g. S.NO., DVSN, ${fileType === 'ODR' ? 'NO.' : 'NO. / DEMAND NO.'}). Please ensure your pasted text contains valid FOIS column headers.`
-    );
+  const defaultHeaders = fileType === 'ODR' ? DEFAULT_ODR_HEADERS : DEFAULT_MATURED_HEADERS;
+
+  if (foundHeaderIndex < 0) {
+    // If no header row was found in pasted text, unshift default FOIS headers
+    rows.unshift(defaultHeaders);
+  } else if (foundHeaderIndex === 0) {
+    // Replace raw header row with standard FOIS headers to unify column names
+    rows[0] = defaultHeaders;
   }
+
+  return true;
 }
 
 /**

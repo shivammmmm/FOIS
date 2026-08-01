@@ -132,21 +132,47 @@ function findFoisHeaderRow(sheet, fileType) {
   return -1;
 }
 
+const DEFAULT_ODR_HEADERS = [
+  "S.NO.", "DVSN", "STTN FROM", "NO.", "DATE", "TIME",
+  "EXPECTED LOADING DATE", "CNSR", "CNSG", "CMDT",
+  "TT", "PC", "PBF", "VIA", "RAKE CMDT",
+  "DSTN", "TYPE", "INDENTED UNTS", "INDENTED 8W", "OTSG UNTS",
+  "OTSG 8W", "SUPPLIED UNTS", "SUPPLIED TIME"
+];
+
+const DEFAULT_MATURED_HEADERS = [
+  "S.NO.", "DVSN", "STTN FROM", "DEMAND NO.", "DEMAND DATE", "DEMAND TIME",
+  "EXPECTED LOADING DATE", "CONSIGNOR", "CNSG", "CMDT",
+  "TT", "PC", "PBF", "VIA", "RAKE CMDT",
+  "DSTN", "TYPE", "INDENTED UNTS", "INDENTED 8W", "OTSG UNTS",
+  "OTSG 8W", "SUPPLIED UNTS", "SUPPLIED TIME"
+];
+
 function sheetToFoisRows(sheet, fileType) {
   const headerRow = findFoisHeaderRow(sheet, fileType);
-  if (headerRow < 0) {
+  if (headerRow >= 0) {
     return {
-      headerRowNumber: null,
-      rows: XLSX.utils.sheet_to_json(sheet, { defval: "" }),
+      headerRowNumber: headerRow + 1,
+      rows: XLSX.utils.sheet_to_json(sheet, {
+        defval: "",
+        range: headerRow,
+      }),
     };
   }
 
+  // Header row not found in uploaded sheet -> auto-inject default FOIS headers
+  const rawAoA = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  if (!Array.isArray(rawAoA) || rawAoA.length === 0) {
+    return { headerRowNumber: null, rows: [] };
+  }
+
+  const defaultHeaders = fileType === "ODR" ? DEFAULT_ODR_HEADERS : DEFAULT_MATURED_HEADERS;
+  const aoaWithHeaders = [defaultHeaders, ...rawAoA];
+  const newSheet = XLSX.utils.aoa_to_sheet(aoaWithHeaders);
+
   return {
-    headerRowNumber: headerRow + 1,
-    rows: XLSX.utils.sheet_to_json(sheet, {
-      defval: "",
-      range: headerRow,
-    }),
+    headerRowNumber: 1,
+    rows: XLSX.utils.sheet_to_json(newSheet, { defval: "" }),
   };
 }
 
