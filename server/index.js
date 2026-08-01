@@ -500,8 +500,6 @@ async function enrichStationFields(records, batchId) {
 }
 
 async function createMovementPreferenceNotifications(records, batchId) {
-  const groups = new Map();
-
   for (const record of Array.isArray(records) ? records : []) {
     if (record.is_duplicate) {
       console.info('[NotificationDelivery] skipped duplicate record for notifications', { batchId, odr: record.odr_number });
@@ -518,62 +516,48 @@ async function createMovementPreferenceNotifications(records, batchId) {
         : record.station_to || record.station_from;
     if (!stationCode) continue;
 
-    const key = [movementType, stationCode].join("|");
-    const group = groups.get(key) || {
-      movementType,
-      stationCode,
-      records: [],
-      exemplar: record,
-    };
-    group.records.push(record);
-    groups.set(key, group);
-  }
-
-  for (const group of groups.values()) {
-    const type = group.movementType;
-    const movement = group.exemplar || {};
-    const stationName = group.movementType === "Outward"
-      ? movement.from_station_name
-      : movement.to_station_name || movement.from_station_name;
+    const type = movementType;
+    const stationName = movementType === "Outward"
+      ? record.from_station_name
+      : record.to_station_name || record.from_station_name;
     const stationDisplay = stationName
-      ? `${stationName} (${group.stationCode})`
-      : group.stationCode;
-    const commodityName = movement.rake_commodity_name || movement.commodity_name || movement.product_name;
-    const commodityCode = movement.rake_commodity_code || movement.commodity_code || movement.product_code || movement.rake_cmdt;
+      ? `${stationName} (${stationCode})`
+      : stationCode;
+    const commodityName = record.rake_commodity_name || record.commodity_name || record.product_name;
+    const commodityCode = record.rake_commodity_code || record.commodity_code || record.product_code || record.rake_cmdt;
     const commodityDisplay = commodityName
       ? `${commodityName}${commodityCode ? ` (${commodityCode})` : ""}`
       : commodityCode || "-";
-    const consignor = movement.consignor || movement.cnsr || movement.company_name || movement.company_code || movement.company || "-";
-    const updatedAt = movement.updated_date || movement.created_date || new Date().toISOString();
+    const consignor = record.consignor || record.cnsr || record.company_name || record.company_code || record.company || "-";
+    const updatedAt = record.updated_date || record.created_date || new Date().toISOString();
     const formattedUpdatedAt = new Intl.DateTimeFormat("en-IN", {
       dateStyle: "medium",
       timeStyle: "short",
       timeZone: "Asia/Kolkata",
     }).format(new Date(updatedAt));
-    const rakeCount = group.records.length;
-    const movementSummary = group.movementType === "Outward"
-      ? `${stationDisplay} se ${rakeCount} rake${rakeCount === 1 ? "" : "s"} dispatch hui hai.`
-      : `${stationDisplay} par ${rakeCount} rake${rakeCount === 1 ? "" : "s"} receive hui hai.`;
+
+    const movementSummary = movementType === "Outward"
+      ? `Dispatch Alert: Station ${stationDisplay} से Rake ${record.odr_number || ""} dispatch हुई है.`
+      : `Arrival Alert: Station ${stationDisplay} पर Rake ${record.odr_number || ""} receive हुई है.`;
 
     try {
       await createNotification({
-        movement_reference: `${batchId}:${group.movementType}:${group.stationCode}`,
-        station_code: group.stationCode,
+        movement_reference: `${batchId}:${record.odr_number || record.id}:${movementType}`,
+        station_code: stationCode,
         notification_type: type,
         type,
-        title: `🚆 ${group.movementType} Alert`,
-        message: `${movementSummary}\n\nCommodity: ${commodityDisplay}\nConsignor: ${consignor}\nUpdated: ${formattedUpdatedAt}`,
+        title: `[FOIS Alert] ${movementType} - ODR ${record.odr_number || ""}`,
+        message: `${movementSummary}\n\nStation: ${stationDisplay}\nCommodity: ${commodityDisplay}\nConsignor: ${consignor}\nUpdated: ${formattedUpdatedAt}`,
         severity: "info",
-        related_odr: movement.odr_number || null,
-        related_division: movement.division || null,
+        related_odr: record.odr_number || null,
+        related_division: record.division || null,
         batch_id: batchId,
-        data: { movement, movements: group.records, station_display: stationDisplay, rake_count: rakeCount, commodity_display: commodityDisplay, consignor, updated_at: updatedAt },
+        data: { movement: record, station_display: stationDisplay, commodity_display: commodityDisplay, consignor, updated_at: updatedAt },
       });
     } catch (error) {
       console.error("[NotificationDelivery] in-app notification failed", {
         batchId,
-        movement_type: group.movementType,
-        station_code: group.stationCode,
+        odr: record.odr_number,
         error: error?.message,
       });
     }
@@ -1189,9 +1173,10 @@ app.post(
       const receivedCount = entry.chunks.reduce((count, chunk) => count + (Buffer.isBuffer(chunk) ? 1 : 0), 0);
       if (receivedCount !== total) return res.json({ success: true, received: receivedCount, total });
 
+      const pendingZone = String(req.query.zone || "ALL").trim();
       pendingUploadChunks.delete(uploadId);
       const token = getAuthToken(req);
-      const params = new URLSearchParams({ fileName, fileType });
+      const params = new URLSearchParams({ fileName, fileType, zone: pendingZone });
       const upstream = await fetch(`http://127.0.0.1:${port}/api/admin/uploads/excel?${params}`, {
         method: "POST",
         headers: { "Content-Type": "application/octet-stream", Authorization: `Bearer ${token}` },
@@ -1214,6 +1199,7 @@ app.post(
       const fileName = isBinaryUpload ? req.query.fileName : req.body?.fileName;
       const fileType = isBinaryUpload ? req.query.fileType : req.body?.fileType;
       const uploadSource = (isBinaryUpload ? req.query.source : req.body?.source) || "Excel";
+      const selectedZone = String((isBinaryUpload ? req.query.zone : req.body?.zone) || "ALL").trim();
       const fileBase64 = isBinaryUpload ? null : req.body?.fileBase64;
       if (!fileName || !fileType || (!isBinaryUpload && !fileBase64)) {
         return res
@@ -1472,6 +1458,7 @@ app.post(
         missing_odrs_found: missingODRs,
         status: uploadStatus,
         upload_time: uploadTime,
+        zone: selectedZone,
       };
 
       const savedUploadLog = await createRecord("UploadLog", logEntry);

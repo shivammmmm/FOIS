@@ -22,11 +22,32 @@ import {
   Layers,
   Zap,
   Info,
+  MapPin,
 } from 'lucide-react';
 import StatusBadge from '@/components/StatusBadge';
 import { parsePastedTextToAOA, createExcelFileFromText } from '@/utils/pastedFoisParser';
 
 const ADMIN_ROLES = ['super_admin', 'admin'];
+
+const RAILWAY_ZONES = [
+  { code: 'ALL', name: 'All Zones (General)' },
+  { code: 'CR', name: 'CR - Central Railway' },
+  { code: 'WR', name: 'WR - Western Railway' },
+  { code: 'NR', name: 'NR - Northern Railway' },
+  { code: 'SR', name: 'SR - Southern Railway' },
+  { code: 'SCR', name: 'SCR - South Central Railway' },
+  { code: 'SER', name: 'SER - South Eastern Railway' },
+  { code: 'SECR', name: 'SECR - South East Central Railway' },
+  { code: 'ECR', name: 'ECR - East Central Railway' },
+  { code: 'ECoR', name: 'ECoR - East Coast Railway' },
+  { code: 'WCR', name: 'WCR - West Central Railway' },
+  { code: 'NWR', name: 'NWR - North Western Railway' },
+  { code: 'NCR', name: 'NCR - North Central Railway' },
+  { code: 'NER', name: 'NER - North Eastern Railway' },
+  { code: 'NFR', name: 'NFR - Northeast Frontier Railway' },
+  { code: 'SWR', name: 'SWR - South Western Railway' },
+  { code: 'KR', name: 'KR - Konkan Railway' },
+];
 
 const SAMPLE_ODR_TSV = `S.NO.\tDVSN\tSTTN FROM\tNO.\tDATE\tTIME\tEXPECTED LOADING DATE\tCNSR\tCNSG\tCMDT\tPRODUCT\tTT\tPC\tPBF\tVIA\tRAKE CMDT\tWAGON TYPE\tDSTN\tTYPE\tINDENTED UNTS\tINDENTED 8W\tOTSG UNTS\tOTSG 8W\tSUPPLIED UNTS\tSUPPLIED TIME
 1\tKGP\tHLDZ\t101\t01-08-2026\t10:00\t01-08-2026\tTISC\tTISC\tCOAL\tCOAL\t-\tC\t-\t-\tBOXN\tBOXN\tTATA\t-\t59\t59\t0\t0\t59\t01-08-2026 12:00
@@ -48,6 +69,7 @@ export default function UploadCenter() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [uploadSource, setUploadSource] = useState('Excel'); // 'Excel' | 'Paste'
   const [fileType, setFileType] = useState('ODR');
+  const [selectedZone, setSelectedZone] = useState('ALL');
   const [dragOver, setDragOver] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
   const [logs, setLogs] = useState([]);
@@ -88,7 +110,8 @@ export default function UploadCenter() {
         (l.file_name || '').toLowerCase().includes(query) ||
         (l.batch_id || '').toLowerCase().includes(query) ||
         (l.source || '').toLowerCase().includes(query) ||
-        (l.file_type || '').toLowerCase().includes(query)
+        (l.file_type || '').toLowerCase().includes(query) ||
+        (l.zone || '').toLowerCase().includes(query)
     );
   }, [logs, historySearch]);
 
@@ -105,6 +128,7 @@ export default function UploadCenter() {
         fileType,
         file,
         source: 'Excel',
+        zone: selectedZone,
       });
       setPreviewData(preview);
     } catch (err) {
@@ -134,6 +158,7 @@ export default function UploadCenter() {
         fileType,
         file,
         source: 'Paste',
+        zone: selectedZone,
       });
 
       setPreviewData(preview);
@@ -165,6 +190,7 @@ export default function UploadCenter() {
         fileType,
         file,
         source: 'Paste',
+        zone: selectedZone,
       });
 
       setUploadResult(result);
@@ -189,6 +215,7 @@ export default function UploadCenter() {
         fileType,
         file: selectedFile,
         source: uploadSource,
+        zone: selectedZone,
       });
 
       setUploadResult(result);
@@ -320,6 +347,36 @@ export default function UploadCenter() {
                 </span>
               </button>
             ))}
+          </div>
+
+          {/* Railway Zone Selector Dropdown */}
+          <div className="flex items-center justify-between gap-3 p-3 bg-gradient-to-r from-card to-primary/5 rounded-xl border border-border/70 shadow-2xs">
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 rounded-lg bg-primary/10 text-primary border border-primary/20 shrink-0">
+                <MapPin className="w-4 h-4" />
+              </div>
+              <div>
+                <label htmlFor="zone-select-dropdown" className="text-xs font-bold text-foreground block cursor-pointer">
+                  Railway Zone (Save Tag)
+                </label>
+                <span className="text-[10px] text-muted-foreground">
+                  Select zone to tag upload batch for memory
+                </span>
+              </div>
+            </div>
+
+            <select
+              id="zone-select-dropdown"
+              value={selectedZone}
+              onChange={(e) => setSelectedZone(e.target.value)}
+              className="px-3 py-1.5 rounded-lg text-xs font-bold bg-card border border-border text-primary focus:outline-hidden focus:ring-2 focus:ring-primary/40 shadow-xs cursor-pointer"
+            >
+              {RAILWAY_ZONES.map((z) => (
+                <option key={z.code} value={z.code}>
+                  {z.name}
+                </option>
+              ))}
+            </select>
           </div>
 
           {activeTab === 'excel' ? (
@@ -736,7 +793,7 @@ export default function UploadCenter() {
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border/80 bg-muted/30">
-                {['File / Payload', 'Version', 'Source', 'Type', 'Time', 'Parsed', 'Valid', 'Duplicates', 'Status', ''].map(
+                {['File / Payload', 'Zone', 'Version', 'Source', 'Type', 'Time', 'Parsed', 'Valid', 'Duplicates', 'Status', ''].map(
                   (h) => (
                     <th
                       key={h}
@@ -752,7 +809,7 @@ export default function UploadCenter() {
               {loadingLogs ? (
                 [...Array(4)].map((_, i) => (
                   <tr key={i} className="border-b border-border/50">
-                    {[...Array(10)].map((_, j) => (
+                    {[...Array(11)].map((_, j) => (
                       <td key={j} className="px-4 py-3">
                         <div className="h-4 bg-muted rounded animate-pulse" />
                       </td>
@@ -761,7 +818,7 @@ export default function UploadCenter() {
                 ))
               ) : filteredLogs.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={11} className="px-4 py-12 text-center text-sm text-muted-foreground">
                     No upload history logs found matching query.
                   </td>
                 </tr>
@@ -770,6 +827,11 @@ export default function UploadCenter() {
                   <tr key={log.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
                     <td className="px-4 py-3 max-w-xs truncate font-semibold text-foreground">
                       {log.file_name}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30">
+                        {log.zone || 'ALL'}
+                      </span>
                     </td>
                     <td className="px-4 py-3 font-bold text-primary">
                       v{log.version_number || 1}

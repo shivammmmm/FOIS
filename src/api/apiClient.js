@@ -311,9 +311,9 @@ export const apiClient = {
         }),
     },
     uploads: {
-      excelPreview: async ({ fileName, fileType, file, source = "Excel" }) => {
+      excelPreview: async ({ fileName, fileType, file, source = "Excel", zone = "ALL" }) => {
         const token = getToken();
-        const params = new URLSearchParams({ fileName, fileType, source });
+        const params = new URLSearchParams({ fileName, fileType, source, zone });
         const arrayBuffer = await file.arrayBuffer();
         const response = await fetch(`${API_BASE_URL}/api/admin/uploads/excel/preview?${params}`, {
           method: "POST",
@@ -324,7 +324,7 @@ export const apiClient = {
         if (!response.ok) throw new Error(details.error || "Preview failed");
         return details;
       },
-      excel: async ({ fileName, fileType, file, source = "Excel" }) => {
+      excel: async ({ fileName, fileType, file, source = "Excel", zone = "ALL" }) => {
         const token = getToken();
         if (!window.crypto?.subtle) {
           throw new Error("Your browser cannot verify duplicate Excel files securely.");
@@ -339,7 +339,7 @@ export const apiClient = {
         const uploadId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
         let details = {};
         for (let index = 0; index < totalChunks; index += 1) {
-          const params = new URLSearchParams({ fileName, fileType, source, uploadId, index: String(index), total: String(totalChunks) });
+          const params = new URLSearchParams({ fileName, fileType, source, uploadId, index: String(index), total: String(totalChunks), zone });
           const response = await fetch(`${API_BASE_URL}/api/admin/uploads/excel/chunk?${params}`, {
             method: "POST",
             headers: { "Content-Type": "application/octet-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}) },

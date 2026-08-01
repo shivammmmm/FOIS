@@ -264,6 +264,7 @@ export default function UploadHistory() {
               <tr className="border-b border-border/80 bg-muted/30">
                 {[
                   "File / Payload Name",
+                  "Zone",
                   "Version",
                   "Source",
                   "Batch ID",
@@ -286,7 +287,7 @@ export default function UploadHistory() {
               {loading ? (
                 [...Array(5)].map((_, rowIndex) => (
                   <tr key={rowIndex} className="border-b border-border/50">
-                    {[...Array(9)].map((_, cellIndex) => (
+                    {[...Array(10)].map((_, cellIndex) => (
                       <td key={cellIndex} className="px-4 py-3">
                         <div className="h-4 bg-muted rounded animate-pulse" />
                       </td>
@@ -296,7 +297,7 @@ export default function UploadHistory() {
               ) : filteredUploads.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={9}
+                    colSpan={10}
                     className="px-4 py-12 text-center text-sm text-muted-foreground"
                   >
                     No upload history logs found.
@@ -310,6 +311,11 @@ export default function UploadHistory() {
                   >
                     <td className="px-4 py-3 max-w-xs truncate font-semibold text-foreground">
                       {fileNameOf(upload)}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30">
+                        {upload.zone || "ALL"}
+                      </span>
                     </td>
                     <td className="px-4 py-3 font-bold text-primary whitespace-nowrap">
                       v{upload.version_number || 1}
