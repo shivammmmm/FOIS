@@ -109,6 +109,8 @@ export const ZONE_NAMES = {
   CR: "Central Railway",
   WR: "Western Railway",
   SCR: "South Central Railway",
+  SCoR: "South Coast Railway",
+  SCOR: "South Coast Railway",
   SR: "Southern Railway",
   NR: "Northern Railway",
   ER: "Eastern Railway",

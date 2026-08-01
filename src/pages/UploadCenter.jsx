@@ -31,6 +31,7 @@ const ADMIN_ROLES = ['super_admin', 'admin'];
 
 const RAILWAY_ZONES = [
   { code: 'ALL', name: 'All Zones (General)' },
+  { code: 'SCoR', name: 'SCoR / SCOR - South Coast Railway' },
   { code: 'CR', name: 'CR - Central Railway' },
   { code: 'WR', name: 'WR - Western Railway' },
   { code: 'NR', name: 'NR - Northern Railway' },
@@ -38,6 +39,7 @@ const RAILWAY_ZONES = [
   { code: 'SCR', name: 'SCR - South Central Railway' },
   { code: 'SER', name: 'SER - South Eastern Railway' },
   { code: 'SECR', name: 'SECR - South East Central Railway' },
+  { code: 'ER', name: 'ER - Eastern Railway' },
   { code: 'ECR', name: 'ECR - East Central Railway' },
   { code: 'ECoR', name: 'ECoR - East Coast Railway' },
   { code: 'WCR', name: 'WCR - West Central Railway' },
@@ -47,6 +49,7 @@ const RAILWAY_ZONES = [
   { code: 'NFR', name: 'NFR - Northeast Frontier Railway' },
   { code: 'SWR', name: 'SWR - South Western Railway' },
   { code: 'KR', name: 'KR - Konkan Railway' },
+  { code: 'MR', name: 'MR - Metro Railway Kolkata' },
 ];
 
 const SAMPLE_ODR_TSV = `S.NO.\tDVSN\tSTTN FROM\tNO.\tDATE\tTIME\tEXPECTED LOADING DATE\tCNSR\tCNSG\tCMDT\tPRODUCT\tTT\tPC\tPBF\tVIA\tRAKE CMDT\tWAGON TYPE\tDSTN\tTYPE\tINDENTED UNTS\tINDENTED 8W\tOTSG UNTS\tOTSG 8W\tSUPPLIED UNTS\tSUPPLIED TIME
