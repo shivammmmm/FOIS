@@ -11,9 +11,10 @@ const CHANNEL_OPTIONS = [
   ["whatsapp_enabled", "WhatsApp"],
 ];
 
-const MOVEMENT_OPTIONS = [
-  ["inward_enabled", "Inward"],
-  ["outward_enabled", "Outward"],
+const STAGE_OPTIONS = [
+  ["notify_new_demand", "📝 New Rack Indent"],
+  ["notify_supplied", "🚚 Rack Supplied"],
+  ["notify_dispatched", "🚆 Rack Dispatched"],
 ];
 
 const DEFAULTS = {
@@ -22,6 +23,9 @@ const DEFAULTS = {
   whatsapp_enabled: false,
   inward_enabled: true,
   outward_enabled: true,
+  notify_new_demand: true,
+  notify_supplied: true,
+  notify_dispatched: true,
   stations: [],
   zones: [],
   divisions: [],
@@ -134,8 +138,8 @@ export default function NotificationPreferences() {
       </div>
 
       <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card p-4">
-        <div className="min-w-0"><div className={`font-semibold ${prefs.in_app_enabled || prefs.email_enabled || prefs.whatsapp_enabled ? 'text-emerald-500' : 'text-muted-foreground'}`}>{prefs.in_app_enabled || prefs.email_enabled || prefs.whatsapp_enabled ? 'Active' : 'Disabled'}</div><div className="mt-1 break-words text-xs text-muted-foreground">Channels: {[prefs.in_app_enabled && 'In-App', prefs.email_enabled && 'Email', prefs.whatsapp_enabled && 'WhatsApp'].filter(Boolean).join(', ') || 'None'} · Movement: {[prefs.inward_enabled && 'Inward', prefs.outward_enabled && 'Outward'].filter(Boolean).join(', ') || 'None'} · State: {prefs.states.join(', ') || 'All'} · District: {prefs.districts.join(', ') || 'All'} · Station: {prefs.stations.join(', ') || 'All'} · Commodity: {prefs.commodities.join(', ') || 'All'} · Rake CMDT: {prefs.rakeCmdts.join(', ') || 'All'} · Last Updated: {lastUpdated ? new Date(lastUpdated).toLocaleString('en-IN') : '-'}</div></div>
-        <div className="flex gap-2"><button type="button" onClick={() => setPrefs((prev) => ({ ...prev, in_app_enabled: !(prev.in_app_enabled || prev.email_enabled || prev.whatsapp_enabled), email_enabled: false, whatsapp_enabled: false }))} className="rounded-lg border border-border px-3 py-2 text-xs">{prefs.in_app_enabled || prefs.email_enabled || prefs.whatsapp_enabled ? 'Disable' : 'Enable'}</button>{recordId && <button type="button" onClick={async () => { if (!window.confirm('Delete notification settings?')) return; await base44.entities.UserNotificationPreference.delete(recordId); setRecordId(null); setPrefs(DEFAULTS); setLastUpdated(null); }} className="inline-flex items-center gap-1 rounded-lg border border-destructive/30 px-3 py-2 text-xs text-destructive"><Trash2 className="h-3.5 w-3.5" />Delete Settings</button>}</div>
+        <div className="min-w-0"><div className={`font-semibold ${prefs.in_app_enabled || prefs.email_enabled || prefs.whatsapp_enabled ? 'text-emerald-500' : 'text-muted-foreground'}`}>{prefs.in_app_enabled || prefs.email_enabled || prefs.whatsapp_enabled ? 'Active' : 'Disabled'}</div><div className="mt-1 break-words text-xs text-muted-foreground">Channels: {[prefs.in_app_enabled && 'In-App', prefs.email_enabled && 'Email', prefs.whatsapp_enabled && 'WhatsApp'].filter(Boolean).join(', ') || 'None'} · Types: {[prefs.notify_new_demand && 'New Indent', prefs.notify_supplied && 'Supplied', prefs.notify_dispatched && 'Dispatched'].filter(Boolean).join(', ') || 'None'} · Station: {prefs.stations.join(', ') || 'All'} · Commodity: {prefs.commodities.join(', ') || 'All'} · Rake CMDT: {prefs.rakeCmdts.join(', ') || 'All'} · Last Updated: {lastUpdated ? new Date(lastUpdated).toLocaleString('en-IN') : '-'}</div></div>
+        <div className="flex gap-2"><button type="button" onClick={() => setPrefs((prev) => ({ ...prev, in_app_enabled: !(prev.in_app_enabled || prev.email_enabled || prefs.whatsapp_enabled), email_enabled: false, whatsapp_enabled: false }))} className="rounded-lg border border-border px-3 py-2 text-xs">{prefs.in_app_enabled || prefs.email_enabled || prefs.whatsapp_enabled ? 'Disable' : 'Enable'}</button>{recordId && <button type="button" onClick={async () => { if (!window.confirm('Delete notification settings?')) return; await base44.entities.UserNotificationPreference.delete(recordId); setRecordId(null); setPrefs(DEFAULTS); setLastUpdated(null); }} className="inline-flex items-center gap-1 rounded-lg border border-destructive/30 px-3 py-2 text-xs text-destructive"><Trash2 className="h-3.5 w-3.5" />Delete Settings</button>}</div>
       </section>
 
       <section className="space-y-4 overflow-visible">
@@ -151,10 +155,10 @@ export default function NotificationPreferences() {
 
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-          Movement Flow
+          Notification Types
         </h2>
-        <div className="grid gap-3 md:grid-cols-2">
-          {MOVEMENT_OPTIONS.map(([key, label]) => (
+        <div className="grid gap-3 md:grid-cols-3">
+          {STAGE_OPTIONS.map(([key, label]) => (
             <ToggleRow key={key} label={label} checked={!!prefs[key]} onChange={(value) => setPref(key, value)} />
           ))}
         </div>
@@ -244,6 +248,9 @@ function toPreferenceState(existing = {}) {
     whatsapp_enabled: existing.whatsapp_enabled === true,
     inward_enabled: existing.inward_enabled !== false,
     outward_enabled: existing.outward_enabled !== false,
+    notify_new_demand: existing.notify_new_demand !== false,
+    notify_supplied: existing.notify_supplied !== false,
+    notify_dispatched: existing.notify_dispatched !== false,
     stations: existing.stations || [],
     zones: existing.zones || [],
     divisions: existing.divisions || [],
@@ -262,6 +269,9 @@ function toPreferencePayload(prefs, userId) {
     whatsapp_enabled: prefs.whatsapp_enabled,
     inward_enabled: prefs.inward_enabled,
     outward_enabled: prefs.outward_enabled,
+    notify_new_demand: prefs.notify_new_demand !== false,
+    notify_supplied: prefs.notify_supplied !== false,
+    notify_dispatched: prefs.notify_dispatched !== false,
     stations: prefs.stations || [],
     zones: prefs.zones || [],
     divisions: prefs.divisions || [],

@@ -8,6 +8,9 @@ import {
   Save,
   Trash2,
   Check,
+  FileText,
+  Truck,
+  Train,
 } from "lucide-react";
 import { base44 } from "@/api/base44Client";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
@@ -36,14 +39,18 @@ const TYPE_CONFIG = {
   Inward: { icon: ArrowDownToLine, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "Inward" },
   Outward: { icon: ArrowUpFromLine, color: "text-blue-400", bg: "bg-blue-500/10", label: "Outward" },
   AdminReview: { icon: AlertTriangle, color: "text-amber-500", bg: "bg-amber-500/10", label: "Manual Review" },
+  IndentPlaced: { icon: FileText, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "New Demand" },
+  NewRakeDemand: { icon: FileText, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "New Demand" },
+  IndentSupplied: { icon: Truck, color: "text-amber-400", bg: "bg-amber-500/10", label: "Rake Supplied" },
+  RakeSupplied: { icon: Truck, color: "text-amber-400", bg: "bg-amber-500/10", label: "Rake Supplied" },
+  RakeDispatched: { icon: Train, color: "text-blue-400", bg: "bg-blue-500/10", label: "Rake Dispatched" },
+  DemandMatured: { icon: Train, color: "text-blue-400", bg: "bg-blue-500/10", label: "Rake Dispatched" },
 };
 
-const INWARD_TYPES = ["Inward", "Arrival"];
-const OUTWARD_TYPES = ["Outward", "Departure"];
-
 const DEFAULT_FILTERS = {
-  showInward: true,
-  showOutward: true,
+  showNewDemand: true,
+  showSupplied: true,
+  showDispatched: true,
   zones: [],
   divisions: [],
   states: [],
@@ -184,18 +191,28 @@ export default function Notifications() {
     return { byOdr, byBatch };
   }, [movements]);
 
-  function isInwardType(type) {
-    return INWARD_TYPES.includes(type);
+  function isNewDemandType(type) {
+    const t = String(type || "").toLowerCase();
+    return t.includes("indentplaced") || t.includes("newrakedemand") || t.includes("demandcreated") || t.includes("new demand");
   }
 
-  function isOutwardType(type) {
-    return OUTWARD_TYPES.includes(type);
+  function isSuppliedType(type) {
+    const t = String(type || "").toLowerCase();
+    return t.includes("indentsupplied") || t.includes("rakesupplied") || t.includes("partialsupplyupdated") || t.includes("rake supplied");
+  }
+
+  function isDispatchedType(type) {
+    const t = String(type || "").toLowerCase();
+    return t.includes("rakedispatched") || t.includes("demandmatured") || t.includes("demandcompleted") || t.includes("rake dispatched");
   }
 
   const filteredNotifs = useMemo(() => {
     return notifs.filter((notification) => {
-      if (isInwardType(notification.type) && !filters.showInward) return false;
-      if (isOutwardType(notification.type) && !filters.showOutward) return false;
+      const notifType = notification.notification_type || notification.type || "";
+
+      if (isNewDemandType(notifType) && !filters.showNewDemand) return false;
+      if (isSuppliedType(notifType) && !filters.showSupplied) return false;
+      if (isDispatchedType(notifType) && !filters.showDispatched) return false;
 
       if (!optionMatches(filters.divisions, notification.related_division || "")) {
         return false;
@@ -228,8 +245,9 @@ export default function Notifications() {
   const unreadCount = displayNotifs.length;
 
   const hasActiveFilters =
-    filters.showInward !== true ||
-    filters.showOutward !== true ||
+    filters.showNewDemand !== true ||
+    filters.showSupplied !== true ||
+    filters.showDispatched !== true ||
     filters.zones.length > 0 ||
     filters.divisions.length > 0 ||
     filters.states.length > 0 ||
@@ -244,8 +262,9 @@ export default function Notifications() {
 
   function applyFilterState(nextFilters) {
     setFilters({
-      showInward: nextFilters.showInward ?? true,
-      showOutward: nextFilters.showOutward ?? true,
+      showNewDemand: nextFilters.showNewDemand ?? nextFilters.showInward ?? true,
+      showSupplied: nextFilters.showSupplied ?? true,
+      showDispatched: nextFilters.showDispatched ?? nextFilters.showOutward ?? true,
       zones: normalizeMultiValue(nextFilters.zones ?? nextFilters.filterZone),
       divisions: normalizeMultiValue(nextFilters.divisions ?? nextFilters.filterDivision),
       states: normalizeMultiValue(nextFilters.states),
@@ -368,9 +387,10 @@ export default function Notifications() {
       {/* Filter Control Section */}
       <div className="space-y-4 rounded-2xl border border-border/80 bg-card p-5 shadow-xs">
         <div className="flex flex-wrap items-center gap-3">
-          <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Type</span>
-          <CheckboxFilter checked={filters.showInward} onChange={(value) => setFilter("showInward", value)} label="Inward / Arrival" color="text-emerald-600" bgColor="bg-emerald-500/10" borderColor="border-emerald-500/30" />
-          <CheckboxFilter checked={filters.showOutward} onChange={(value) => setFilter("showOutward", value)} label="Outward / Departure" color="text-blue-600" bgColor="bg-blue-500/10" borderColor="border-blue-500/30" />
+          <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Notification Type</span>
+          <CheckboxFilter checked={filters.showNewDemand} onChange={(value) => setFilter("showNewDemand", value)} label="📝 New Rack Indent" color="text-emerald-600" bgColor="bg-emerald-500/10" borderColor="border-emerald-500/30" />
+          <CheckboxFilter checked={filters.showSupplied} onChange={(value) => setFilter("showSupplied", value)} label="🚚 Rack Supplied" color="text-amber-600" bgColor="bg-amber-500/10" borderColor="border-amber-500/30" />
+          <CheckboxFilter checked={filters.showDispatched} onChange={(value) => setFilter("showDispatched", value)} label="🚆 Rack Dispatched" color="text-blue-600" bgColor="bg-blue-500/10" borderColor="border-blue-500/30" />
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -655,8 +675,9 @@ function dedupeSavedFilters(items) {
 function savedFilterSignature(filterData) {
   if (!filterData || typeof filterData !== "object") return "";
   const obj = {
-    showInward: filterData.showInward ?? true,
-    showOutward: filterData.showOutward ?? true,
+    showNewDemand: filterData.showNewDemand ?? true,
+    showSupplied: filterData.showSupplied ?? true,
+    showDispatched: filterData.showDispatched ?? true,
     zones: (filterData.zones || []).slice().sort(),
     divisions: (filterData.divisions || []).slice().sort(),
     states: (filterData.states || []).slice().sort(),
@@ -670,8 +691,9 @@ function savedFilterSignature(filterData) {
 
 function normalizeNotificationFilters(source) {
   return {
-    showInward: source.showInward ?? true,
-    showOutward: source.showOutward ?? true,
+    showNewDemand: source.showNewDemand ?? true,
+    showSupplied: source.showSupplied ?? true,
+    showDispatched: source.showDispatched ?? true,
     zones: Array.isArray(source.zones) ? source.zones : [],
     divisions: Array.isArray(source.divisions) ? source.divisions : [],
     states: Array.isArray(source.states) ? source.states : [],

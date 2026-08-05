@@ -35,22 +35,42 @@ export default function Login() {
   };
 
   const requestReset = async () => {
-    if (!identifier.trim()) return setResetMessage('पहले Username / Email भरें।');
-    setResetLoading(true); setResetMessage('');
+    if (!identifier.trim()) return setResetMessage('Please enter your Username or Email first.');
+    setResetLoading(true);
+    setResetMessage('');
     try {
       const result = await base44.auth.requestPasswordReset(identifier.trim());
-      setResetMessage(`${result.message}${result.development_code ? ` Development code: ${result.development_code}` : ''}`);
-    } catch (err) { setResetMessage(err?.message || 'Reset request failed'); }
-    finally { setResetLoading(false); }
+      if (result.development_code) {
+        setResetCode(String(result.development_code));
+        setResetMessage(`${result.message} (Dev Code: ${result.development_code})`);
+      } else {
+        setResetMessage(result.message);
+      }
+    } catch (err) {
+      setResetMessage(err?.message || 'Reset request failed');
+    } finally {
+      setResetLoading(false);
+    }
   };
 
   const resetPassword = async () => {
-    setResetLoading(true); setResetMessage('');
+    setResetLoading(true);
+    setResetMessage('');
     try {
-      const result = await base44.auth.resetPassword({ identifier: identifier.trim(), code: resetCode, password: newPassword });
-      setResetMessage(result.message); setResetCode(''); setNewPassword('');
-    } catch (err) { setResetMessage(err?.message || 'Password reset failed'); }
-    finally { setResetLoading(false); }
+      const result = await base44.auth.resetPassword({
+        identifier: identifier.trim(),
+        code: resetCode,
+        password: newPassword,
+      });
+      setResetMessage('✅ ' + result.message);
+      setPassword(newPassword);
+      setResetCode('');
+      setNewPassword('');
+    } catch (err) {
+      setResetMessage('❌ ' + (err?.message || 'Password reset failed'));
+    } finally {
+      setResetLoading(false);
+    }
   };
 
   return (
@@ -74,13 +94,47 @@ export default function Login() {
             <button type="button" onClick={() => setResetOpen((value) => !value)} className="mt-2 text-sm font-medium text-primary hover:underline">Forgot password?</button>
           </div>
 
-          {resetOpen && <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
-            <button type="button" onClick={requestReset} disabled={resetLoading} className="w-full rounded-lg border border-primary/30 px-3 py-2 text-sm text-primary disabled:opacity-50">Send reset code</button>
-            <input value={resetCode} onChange={(e) => setResetCode(e.target.value)} placeholder="6-digit reset code" className="w-full rounded-lg border px-3 py-2 outline-none" />
-            <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="New password (minimum 6 characters)" className="w-full rounded-lg border px-3 py-2 outline-none" />
-            <button type="button" onClick={resetPassword} disabled={resetLoading || !resetCode || newPassword.length < 6} className="w-full rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">Reset password</button>
-            {resetMessage && <div className="text-xs text-muted-foreground">{resetMessage}</div>}
-          </div>}
+          {resetOpen && (
+            <div className="space-y-3 rounded-xl border border-primary/20 bg-primary/5 p-4 animate-fade-in">
+              <div className="text-xs font-bold uppercase tracking-wide text-primary">
+                Password Reset Assistance
+              </div>
+              <button
+                type="button"
+                onClick={requestReset}
+                disabled={resetLoading}
+                className="w-full rounded-lg border border-primary/30 bg-primary/10 py-2 text-xs font-semibold text-primary hover:bg-primary/20 disabled:opacity-50 transition-colors"
+              >
+                {resetLoading ? 'Sending...' : '1. Send Reset Code to Email'}
+              </button>
+              <input
+                value={resetCode}
+                onChange={(e) => setResetCode(e.target.value)}
+                placeholder="2. Enter 6-digit reset code"
+                className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm outline-none"
+              />
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="3. Enter new password (min 6 chars)"
+                className="w-full rounded-lg border border-border bg-card px-3 py-2 text-sm outline-none"
+              />
+              <button
+                type="button"
+                onClick={resetPassword}
+                disabled={resetLoading || !resetCode || newPassword.length < 6}
+                className="w-full rounded-lg bg-primary py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-50 transition-colors"
+              >
+                {resetLoading ? 'Resetting...' : 'Confirm & Reset Password'}
+              </button>
+              {resetMessage && (
+                <div className="text-xs leading-relaxed text-muted-foreground bg-card p-2.5 rounded-lg border border-border">
+                  {resetMessage}
+                </div>
+              )}
+            </div>
+          )}
 
           <div>
             <label className="text-sm text-muted-foreground">Password</label>

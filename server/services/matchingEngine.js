@@ -442,19 +442,28 @@ export async function runMatchingEngine({
       await Promise.all(notificationEvents.slice(start, start + 10).map(async ({ item, odr }) => {
         const isManual = item.status === "Manual Review";
         if (isManual) return;
+        const raw = odr?.raw || {};
+        const fromStation = odr?.station_from || raw.station_from || "-";
+        const toStation = odr?.station_to || raw.station_to || "-";
+        const commodity = odr?.commodity || raw.commodity || raw.rake_cmdt || "-";
+        const dispatchDate = raw.departure_date || raw.demand_date || new Date().toISOString().split("T")[0];
+
+        const notifType = "RakeDispatched";
+        const title = `🚆 Rake Dispatched: #${raw.odr_number || odr?.number || ""}`;
+        const message = `📍 Station: ${fromStation}\nDestination: ${toStation}\nCommodity: ${commodity}\nDispatch Date: ${dispatchDate}`;
+
         await createNotification({
           movement_reference: `MATCH:${item.odr_id}:${item.matured_id || "REVIEW"}`,
           station_code: odr?.station_from || null,
-          notification_type: item.status === "Partial" ? "PartialSupplyUpdated" : item.status === "Completed" ? "DemandCompleted" : "DemandMatured",
-          type: ["Inward", "Outward"].includes(odr?.raw?.movement_type)
-            ? odr.raw.movement_type
-            : "Inward",
-          title: item.status === "Partial" ? "Partial Supply Updated" : item.status === "Completed" ? "Demand Completed" : "Demand Matured",
-          message: item.status === "Completed" ? `Demand ${odr?.raw?.odr_number || ""} supply is complete.` : `ODR ${odr?.raw?.odr_number || ""} matched successfully.`,
-          related_odr: odr?.raw?.odr_number || null,
-          related_division: odr?.raw?.division || null,
+          notification_type: notifType,
+          type: ["Inward", "Outward"].includes(raw?.movement_type) ? raw.movement_type : "Outward",
+          title,
+          message,
+          severity: "info",
+          related_odr: raw?.odr_number || null,
+          related_division: raw?.division || null,
           batch_id: odr?.batch || null,
-          data: { match_id: item.match_id },
+          data: { movement: raw, match_id: item.match_id, from_station: fromStation, to_station: toStation, commodity, dispatch_date: dispatchDate },
         }).catch((error) => console.error("[Matching] notification failed", error?.message));
       }));
     }

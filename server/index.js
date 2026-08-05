@@ -505,54 +505,69 @@ async function createMovementPreferenceNotifications(records, batchId) {
       console.info('[NotificationDelivery] skipped duplicate record for notifications', { batchId, odr: record.odr_number });
       continue;
     }
-    const movementType = record.movement_type;
-    if (!['Inward', 'Outward'].includes(movementType)) {
-      console.info('[NotificationDelivery] skipped record without valid movement type', { batchId, record_id: record.id });
-      continue;
-    }
-    const stationCode =
-      movementType === "Outward"
-        ? record.station_from
-        : record.station_to || record.station_from;
+    const movementType = record.movement_type || "Outward";
+    const stationCode = record.station_from || record.station_to;
     if (!stationCode) continue;
 
-    const type = movementType;
-    const stationName = movementType === "Outward"
-      ? record.from_station_name
-      : record.to_station_name || record.from_station_name;
-    const stationDisplay = stationName
-      ? `${stationName} (${stationCode})`
-      : stationCode;
+    const fromStationDisplay = record.from_station_name ? `${record.from_station_name} (${record.station_from})` : record.station_from || "-";
+    const toStationDisplay = record.to_station_name ? `${record.to_station_name} (${record.station_to})` : record.station_to || "-";
     const commodityName = record.rake_commodity_name || record.commodity_name || record.product_name;
-    const commodityCode = record.rake_commodity_code || record.commodity_code || record.product_code || record.rake_cmdt;
+    const commodityCode = record.rake_commodity_code || record.commodity_code || record.product_code || record.commodity || record.rake_cmdt;
     const commodityDisplay = commodityName
       ? `${commodityName}${commodityCode ? ` (${commodityCode})` : ""}`
       : commodityCode || "-";
-    const consignor = record.consignor || record.cnsr || record.company_name || record.company_code || record.company || "-";
-    const updatedAt = record.updated_date || record.created_date || new Date().toISOString();
-    const formattedUpdatedAt = new Intl.DateTimeFormat("en-IN", {
-      dateStyle: "medium",
-      timeStyle: "short",
-      timeZone: "Asia/Kolkata",
-    }).format(new Date(updatedAt));
 
-    const movementSummary = movementType === "Outward"
-      ? `Dispatch Alert: Station ${stationDisplay} से Rake ${record.odr_number || ""} dispatch हुई है.`
-      : `Arrival Alert: Station ${stationDisplay} पर Rake ${record.odr_number || ""} receive हुई है.`;
+    const raw = record.raw_data || {};
+    const indentedUnits = Number(record.indented_units || raw.indented_units || raw.indented_8w || record.wagons || 0);
+    const suppliedUnits = Number(record.supplied_units || raw.supplied_units || 0);
+    const suppliedTime = record.supplied_time || raw.supplied_time || raw.supplied_date || "";
+    const demandDate = record.departure_date || record.demand_date || raw.DATE || raw.demand_date || "-";
+
+    const isSuppliedStage = suppliedUnits > 0 || Boolean(suppliedTime) || record.last_action === "UPDATED";
+
+    let notifType = "";
+    let title = "";
+    let message = "";
+
+    if (isSuppliedStage) {
+      // Stage 2: Rake Supplied
+      notifType = "IndentSupplied";
+      title = `🚚 Rake Supplied: #${record.odr_number || record.id || ""}`;
+      message = `📍 Station: ${fromStationDisplay}\nCommodity: ${commodityDisplay}\nSupplied: ${suppliedUnits} / ${indentedUnits || "-"} Units\nSupply Date: ${suppliedTime || demandDate}`;
+    } else {
+      // Stage 1: New Rake Demand
+      notifType = "IndentPlaced";
+      title = `📝 New Rake Demand: #${record.odr_number || record.id || ""}`;
+      message = `📍 Station: ${fromStationDisplay}\nCommodity: ${commodityDisplay}\nDestination: ${toStationDisplay}\nUnits: ${indentedUnits || "-"} Units\nDemand Date: ${demandDate}`;
+    }
+
+    const demandKey = record.odr_number || record.business_key || record.id || "";
+    const movementRef = isSuppliedStage
+      ? `DEMAND:${demandKey}:IndentSupplied:${suppliedUnits}:${suppliedTime || demandDate}`
+      : `DEMAND:${demandKey}:IndentPlaced`;
 
     try {
       await createNotification({
-        movement_reference: `${batchId}:${record.odr_number || record.id}:${movementType}`,
+        movement_reference: movementRef,
         station_code: stationCode,
-        notification_type: type,
-        type,
-        title: `[FOIS Alert] ${movementType} - ODR ${record.odr_number || ""}`,
-        message: `${movementSummary}\n\nStation: ${stationDisplay}\nCommodity: ${commodityDisplay}\nConsignor: ${consignor}\nUpdated: ${formattedUpdatedAt}`,
+        notification_type: notifType,
+        type: movementType,
+        title,
+        message,
         severity: "info",
         related_odr: record.odr_number || null,
         related_division: record.division || null,
         batch_id: batchId,
-        data: { movement: record, station_display: stationDisplay, commodity_display: commodityDisplay, consignor, updated_at: updatedAt },
+        data: {
+          movement: record,
+          from_station: fromStationDisplay,
+          to_station: toStationDisplay,
+          commodity: commodityDisplay,
+          indented_units: indentedUnits,
+          supplied_units: suppliedUnits,
+          demand_date: demandDate,
+          supplied_time: suppliedTime,
+        },
       });
     } catch (error) {
       console.error("[NotificationDelivery] in-app notification failed", {

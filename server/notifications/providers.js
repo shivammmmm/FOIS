@@ -81,8 +81,22 @@ function getPreferenceRakeCmdt(movement) {
 }
 
 function preferenceMatches(preference, notification, context = {}) {
-  const type = notification?.type || context.notification_type || "";
+  const notifType = String(notification?.notification_type || context.notification_type || notification?.type || "");
+  const normalizedType = notifType.toLowerCase();
 
+  // Check Stage Notification Preferences
+  if (["indentplaced", "demandcreated", "newrakedemand", "new_rake_demand"].some(t => normalizedType.includes(t))) {
+    if (preference.notify_new_demand === false) return false;
+  }
+  if (["indentsupplied", "partialsupplyupdated", "rakesupplied", "rake_supplied"].some(t => normalizedType.includes(t))) {
+    if (preference.notify_supplied === false) return false;
+  }
+  if (["rakedispatched", "demandmatured", "demandcompleted", "rake_dispatched"].some(t => normalizedType.includes(t))) {
+    if (preference.notify_dispatched === false) return false;
+  }
+
+  // Directional Movement Filter
+  const type = notification?.type || context.notification_type || "";
   if (type === "Arrival" || type === "Inward") {
     if (preference.inward_enabled === false) return false;
   }
@@ -90,35 +104,64 @@ function preferenceMatches(preference, notification, context = {}) {
     if (preference.outward_enabled === false) return false;
   }
 
-  const stationCode = context.station_code || notification.station_code;
-  const normalizedStationCode = normalizeCode(stationCode);
-  if (
-    hasAny(preference.stations) &&
-    !preference.stations.map(normalizeCode).includes(normalizedStationCode)
-  ) {
-    return false;
+  // Flexible Station Matching (Code or Name)
+  const movement = context.movement || {};
+  if (hasAny(preference.stations)) {
+    const prefStations = preference.stations.map(normalizeCode);
+    const eventStations = [
+      context.station_code,
+      notification.station_code,
+      movement.station_from,
+      movement.station_to,
+      movement.from_station_name,
+      movement.to_station_name,
+    ].filter(Boolean).map(normalizeCode);
+
+    const matchesStation = prefStations.some(p => eventStations.some(e => e.includes(p) || p.includes(e)));
+    if (!matchesStation) return false;
   }
 
-  const movement = context.movement || {};
+  // Hierarchy Filters
   if (hasAny(preference.zones)) {
-    const zones = [movement.from_zone, movement.to_zone, movement.zone].filter(Boolean);
-    if (!preference.zones.some((zone) => zones.includes(zone))) return false;
+    const zones = [movement.from_zone, movement.to_zone, movement.zone].filter(Boolean).map(normalizeCode);
+    if (!preference.zones.map(normalizeCode).some((zone) => zones.includes(zone))) return false;
   }
   if (hasAny(preference.states)) {
-    const states = [movement.from_state, movement.to_state, movement.state].filter(Boolean);
-    if (!preference.states.some((state) => states.includes(state))) return false;
+    const states = [movement.from_state, movement.to_state, movement.state].filter(Boolean).map(normalizeCode);
+    if (!preference.states.map(normalizeCode).some((state) => states.includes(state))) return false;
   }
   if (hasAny(preference.districts)) {
-    const districts = [movement.from_district, movement.to_district, movement.district].filter(Boolean);
-    if (!preference.districts.some((district) => districts.includes(district))) return false;
+    const districts = [movement.from_district, movement.to_district, movement.district].filter(Boolean).map(normalizeCode);
+    if (!preference.districts.map(normalizeCode).some((district) => districts.includes(district))) return false;
   }
+
+  // Commodity Filter
   if (hasAny(preference.commodities)) {
-    const commodity = movement.commodity_code || movement.commodity;
-    if (!preference.commodities.includes(commodity)) return false;
+    const prefCommodities = preference.commodities.map(normalizeCode);
+    const eventCommodities = [
+      movement.commodity_code,
+      movement.commodity,
+      movement.commodity_name,
+      readRaw(movement, "CMDT", "Commodity"),
+    ].filter(Boolean).map(normalizeCode);
+
+    const matchesCommodity = prefCommodities.some(p => eventCommodities.some(c => c.includes(p) || p.includes(c)));
+    if (!matchesCommodity) return false;
   }
+
+  // Rake Commodity Filter
   if (hasAny(preference.rakeCmdts)) {
+    const prefRakes = preference.rakeCmdts.map(normalizeCode);
     const rakeCmdt = getPreferenceRakeCmdt(movement);
-    if (!preference.rakeCmdts.includes(rakeCmdt)) return false;
+    const eventRakes = [
+      rakeCmdt,
+      movement.rake_commodity_code,
+      movement.rake_cmdt,
+      readRaw(movement, "Rake CMDT", "RAKE CMDT"),
+    ].filter(Boolean).map(normalizeCode);
+
+    const matchesRake = prefRakes.some(p => eventRakes.some(r => r.includes(p) || p.includes(r)));
+    if (!matchesRake) return false;
   }
 
   return true;

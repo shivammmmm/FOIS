@@ -65,7 +65,12 @@ export async function createNotification({
   // Defensive normalizations
   const normalized_notification_type = String(notification_type ?? type ?? "");
   const normalizedMovementType = String(type ?? normalized_notification_type).toLowerCase();
-  if (!['inward', 'outward', 'adminreview'].includes(normalizedMovementType)) {
+  const allowedMovementTypes = [
+    'inward', 'outward', 'adminreview',
+    'indentplaced', 'indentsupplied', 'rakedispatched',
+    'demandcreated', 'demandmatured', 'demandcompleted', 'partialsupplyupdated'
+  ];
+  if (!allowedMovementTypes.some(t => normalizedMovementType.includes(t))) {
     console.info('[NotificationDelivery] skipped non-user movement notification', { notification_type: normalized_notification_type, type });
     return { created: false, skipped: true, reason: 'unsupported_user_notification_type' };
   }
