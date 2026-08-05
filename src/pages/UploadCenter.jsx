@@ -618,6 +618,7 @@ export default function UploadCenter() {
                     ['Zone & Version', `Version ${uploadResult.version_number || 1}`],
                     ['Records Parsed', uploadResult.records_parsed?.toLocaleString('en-IN') || 0],
                     ['Inserted (New)', `+${uploadResult.insertedRecords?.toLocaleString('en-IN') || 0}`],
+                    ['Real Added (Net New)', `+${(uploadResult.real_added ?? Math.max(0, (uploadResult.records_valid || 0) - (uploadResult.duplicates_found || 0)))?.toLocaleString('en-IN')}`],
                     ['Updated', uploadResult.updatedRecords?.toLocaleString('en-IN') || 0],
                     ['Skipped (Unchanged)', uploadResult.skippedRecords?.toLocaleString('en-IN') || 0],
                   ].map(([label, value]) => (
@@ -796,7 +797,7 @@ export default function UploadCenter() {
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border/80 bg-muted/30">
-                {['File / Payload', 'Zone', 'Version', 'Source', 'Type', 'Time', 'Parsed', 'Valid', 'Duplicates', 'Status', ''].map(
+                {['File / Payload', 'Zone', 'Version', 'Source', 'Type', 'Time', 'Parsed', 'Valid', 'Duplicates', 'Real Added', 'Status', ''].map(
                   (h) => (
                     <th
                       key={h}
@@ -812,7 +813,7 @@ export default function UploadCenter() {
               {loadingLogs ? (
                 [...Array(4)].map((_, i) => (
                   <tr key={i} className="border-b border-border/50">
-                    {[...Array(11)].map((_, j) => (
+                    {[...Array(12)].map((_, j) => (
                       <td key={j} className="px-4 py-3">
                         <div className="h-4 bg-muted rounded animate-pulse" />
                       </td>
@@ -821,7 +822,7 @@ export default function UploadCenter() {
                 ))
               ) : filteredLogs.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={12} className="px-4 py-12 text-center text-sm text-muted-foreground">
                     No upload history logs found matching query.
                   </td>
                 </tr>
@@ -872,6 +873,9 @@ export default function UploadCenter() {
                       ) : (
                         <span className="text-muted-foreground">0</span>
                       )}
+                    </td>
+                    <td className="px-4 py-3 text-center font-extrabold text-emerald-500">
+                      +{log.real_added ?? Math.max(0, (log.records_valid || 0) - (log.duplicates_found || 0))}
                     </td>
                     <td className="px-4 py-3">
                       <StatusBadge status={log.status} />

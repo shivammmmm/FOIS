@@ -269,8 +269,10 @@ export default function UploadHistory() {
                   "Source",
                   "Batch ID",
                   "Upload Date",
-                  "Uploaded By",
-                  "Total Records",
+                  "Parsed",
+                  "Valid",
+                  "Duplicates",
+                  "Real Added",
                   "Status",
                   "Actions",
                 ].map((header) => (
@@ -287,7 +289,7 @@ export default function UploadHistory() {
               {loading ? (
                 [...Array(5)].map((_, rowIndex) => (
                   <tr key={rowIndex} className="border-b border-border/50">
-                    {[...Array(10)].map((_, cellIndex) => (
+                    {[...Array(12)].map((_, cellIndex) => (
                       <td key={cellIndex} className="px-4 py-3">
                         <div className="h-4 bg-muted rounded animate-pulse" />
                       </td>
@@ -297,7 +299,7 @@ export default function UploadHistory() {
               ) : filteredUploads.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={10}
+                    colSpan={12}
                     className="px-4 py-12 text-center text-sm text-muted-foreground"
                   >
                     No upload history logs found.
@@ -337,11 +339,23 @@ export default function UploadHistory() {
                     <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
                       {formatDate(upload.uploaded_at || upload.upload_time)}
                     </td>
-                    <td className="px-4 py-3 font-medium text-foreground whitespace-nowrap">
-                      {upload.uploaded_by || "-"}
+                    <td className="px-4 py-3 text-center font-medium text-foreground whitespace-nowrap">
+                      {formatCount(upload.records_parsed ?? upload.record_count ?? 0)}
                     </td>
-                    <td className="px-4 py-3 text-right font-bold text-foreground whitespace-nowrap">
-                      {formatCount(recordCountOf(upload))}
+                    <td className="px-4 py-3 text-center font-bold text-emerald-400 whitespace-nowrap">
+                      {formatCount(upload.records_valid ?? upload.record_count ?? 0)}
+                    </td>
+                    <td className="px-4 py-3 text-center whitespace-nowrap">
+                      {upload.duplicates_found > 0 ? (
+                        <span className="text-orange-400 font-semibold">
+                          {formatCount(upload.duplicates_found)}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center font-extrabold text-emerald-400 whitespace-nowrap">
+                      +{formatCount(upload.real_added ?? Math.max(0, (upload.records_valid ?? upload.record_count ?? 0) - (upload.duplicates_found ?? 0)))}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap">
                       <StatusBadge status={upload.status} />
@@ -408,6 +422,9 @@ function UploadDetailsModal({ upload, onClose }) {
     ["Upload Date", formatDate(upload.uploaded_at || upload.upload_time)],
     ["Uploaded By", upload.uploaded_by || "-"],
     ["Total Parsed Rows", formatCount(upload.records_parsed || upload.records_valid)],
+    ["Valid Rows", formatCount(upload.records_valid ?? upload.record_count ?? 0)],
+    ["Duplicates DB Skipped", formatCount(upload.duplicates_found ?? 0)],
+    ["Real Value Added (Net New)", formatCount(upload.real_added ?? Math.max(0, (upload.records_valid ?? 0) - (upload.duplicates_found ?? 0)))],
     ["Inserted (New)", formatCount(upload.insertedRecords ?? upload.record_count ?? 0)],
     ["Updated", formatCount(upload.updatedRecords ?? upload.updated_count ?? 0)],
     ["Skipped (Unchanged)", formatCount(upload.skippedRecords ?? upload.skipped_count ?? 0)],

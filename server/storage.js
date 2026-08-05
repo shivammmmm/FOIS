@@ -129,6 +129,13 @@ function normalizeUploadHistoryRecord(record = {}) {
     numericCount(record.records_valid, numericCount(record.insertedRecords, 0))
   );
 
+  const recordsValid = numericCount(record.records_valid, recordCount);
+  const duplicatesFound = numericCount(record.duplicates_found, 0);
+  const realAdded = numericCount(
+    record.real_added,
+    Math.max(0, recordsValid - duplicatesFound)
+  );
+
   return {
     ...record,
     original_file_name: originalFileName,
@@ -137,8 +144,10 @@ function normalizeUploadHistoryRecord(record = {}) {
     upload_time: record.upload_time || uploadedAt,
     record_count: recordCount,
     records_parsed: numericCount(record.records_parsed, recordCount),
-    records_valid: numericCount(record.records_valid, recordCount),
+    records_valid: recordsValid,
     records_failed: numericCount(record.records_failed, 0),
+    duplicates_found: duplicatesFound,
+    real_added: realAdded,
     status: record.status || "Unknown",
   };
 }

@@ -47,6 +47,10 @@
       "type": "number",
       "default": 0
     },
+    "real_added": {
+      "type": "number",
+      "default": 0
+    },
     "missing_odrs_found": {
       "type": "number",
       "default": 0
