@@ -258,42 +258,47 @@ export default function UploadHistory() {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto scrollbar-thin">
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border/80 bg-muted/30">
                 {[
-                  "File / Payload Name",
-                  "Zone",
-                  "Version",
-                  "Source",
-                  "Batch ID",
-                  "Upload Date",
-                  "Parsed",
-                  "Valid",
-                  "Duplicates",
-                  "Real Added",
-                  "Status",
-                  "Actions",
-                ].map((header) => (
+                  { label: "File / Payload Name", align: "text-left" },
+                  { label: "Zone", align: "text-center" },
+                  { label: "Version", align: "text-center" },
+                  { label: "Source", align: "text-center" },
+                  { label: "Batch ID", align: "text-left" },
+                  { label: "Upload Date", align: "text-left" },
+                  { label: "Parsed", align: "text-center" },
+                  { label: "Valid", align: "text-center" },
+                  { label: "Duplicates", align: "text-center" },
+                  { label: "Real Added", align: "text-center" },
+                  { label: "Status", align: "text-center" },
+                ].map(({ label, align }) => (
                   <th
-                    key={header}
-                    className="px-4 py-3 text-left font-semibold text-muted-foreground whitespace-nowrap"
+                    key={label}
+                    className={`px-3 py-3 font-semibold text-muted-foreground whitespace-nowrap ${align}`}
                   >
-                    {header}
+                    {label}
                   </th>
                 ))}
+                <th className="px-3 py-3 font-semibold text-muted-foreground whitespace-nowrap text-center sticky right-0 bg-card z-20 border-l border-border/60 shadow-xs">
+                  Actions
+                </th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 [...Array(5)].map((_, rowIndex) => (
                   <tr key={rowIndex} className="border-b border-border/50">
-                    {[...Array(12)].map((_, cellIndex) => (
-                      <td key={cellIndex} className="px-4 py-3">
+                    {[...Array(11)].map((_, cellIndex) => (
+                      <td key={cellIndex} className="px-3 py-3">
                         <div className="h-4 bg-muted rounded animate-pulse" />
                       </td>
                     ))}
+                    <td className="px-3 py-3 sticky right-0 bg-card z-20 border-l border-border/60">
+                      <div className="h-4 w-12 bg-muted rounded animate-pulse mx-auto" />
+                    </td>
                   </tr>
                 ))
               ) : filteredUploads.length === 0 ? (
@@ -309,20 +314,20 @@ export default function UploadHistory() {
                 filteredUploads.map((upload) => (
                   <tr
                     key={upload.id}
-                    className="border-b border-border/50 hover:bg-muted/30 transition-colors"
+                    className="group border-b border-border/50 hover:bg-muted/30 transition-colors"
                   >
-                    <td className="px-4 py-3 max-w-xs truncate font-semibold text-foreground">
+                    <td className="px-3 py-2.5 max-w-[160px] truncate font-semibold text-foreground" title={fileNameOf(upload)}>
                       {fileNameOf(upload)}
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
                       <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30">
                         {upload.zone || "ALL"}
                       </span>
                     </td>
-                    <td className="px-4 py-3 font-bold text-primary whitespace-nowrap">
+                    <td className="px-3 py-2.5 text-center font-bold text-primary whitespace-nowrap">
                       v{upload.version_number || 1}
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
                       <span
                         className={`px-2 py-0.5 rounded-md text-[11px] font-semibold ${
                           upload.source === "Paste"
@@ -333,19 +338,19 @@ export default function UploadHistory() {
                         {upload.source || "Excel"}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-muted-foreground font-mono text-[11px] whitespace-nowrap">
+                    <td className="px-3 py-2.5 text-muted-foreground font-mono text-[10px] max-w-[140px] truncate whitespace-nowrap" title={upload.batch_id}>
                       {upload.batch_id || "-"}
                     </td>
-                    <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+                    <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
                       {formatDate(upload.uploaded_at || upload.upload_time)}
                     </td>
-                    <td className="px-4 py-3 text-center font-medium text-foreground whitespace-nowrap">
+                    <td className="px-3 py-2.5 text-center font-medium text-foreground whitespace-nowrap">
                       {formatCount(upload.records_parsed ?? upload.record_count ?? 0)}
                     </td>
-                    <td className="px-4 py-3 text-center font-bold text-emerald-400 whitespace-nowrap">
+                    <td className="px-3 py-2.5 text-center font-bold text-emerald-400 whitespace-nowrap">
                       {formatCount(upload.records_valid ?? upload.record_count ?? 0)}
                     </td>
-                    <td className="px-4 py-3 text-center whitespace-nowrap">
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
                       {upload.duplicates_found > 0 ? (
                         <span className="text-orange-400 font-semibold">
                           {formatCount(upload.duplicates_found)}
@@ -354,33 +359,33 @@ export default function UploadHistory() {
                         <span className="text-muted-foreground">0</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-center font-extrabold text-emerald-400 whitespace-nowrap">
+                    <td className="px-3 py-2.5 text-center font-extrabold text-emerald-400 whitespace-nowrap">
                       +{formatCount(upload.real_added ?? Math.max(0, (upload.records_valid ?? upload.record_count ?? 0) - (upload.duplicates_found ?? 0)))}
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
                       <StatusBadge status={upload.status} />
                     </td>
-                    <td className="px-4 py-3 whitespace-nowrap">
-                      <div className="flex items-center gap-1">
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap sticky right-0 bg-card group-hover:bg-muted/90 transition-colors z-10 border-l border-border/60 shadow-xs">
+                      <div className="flex items-center justify-center gap-1">
                         <button
                           onClick={() => setSelectedUpload(upload)}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer transition-colors"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer transition-colors"
                           title="View Upload Details"
                           aria-label="View upload"
                         >
-                          <Eye className="w-4 h-4" />
+                          <Eye className="w-3.5 h-3.5" />
                         </button>
                         <button
                           onClick={() => setConfirmUpload(upload)}
                           disabled={deletingId === upload.id}
-                          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-red-500/10 hover:text-red-400 disabled:opacity-60 cursor-pointer transition-colors"
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-red-400 hover:bg-red-500/15 hover:text-red-300 disabled:opacity-60 cursor-pointer transition-colors"
                           title="Delete Upload Entry"
                           aria-label="Delete upload"
                         >
                           {deletingId === upload.id ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           ) : (
-                            <Trash2 className="w-4 h-4" />
+                            <Trash2 className="w-3.5 h-3.5" />
                           )}
                         </button>
                       </div>
@@ -429,7 +434,6 @@ function UploadDetailsModal({ upload, onClose }) {
     ["Updated", formatCount(upload.updatedRecords ?? upload.updated_count ?? 0)],
     ["Skipped (Unchanged)", formatCount(upload.skippedRecords ?? upload.skipped_count ?? 0)],
     ["Duplicates Inside File", formatCount(upload.duplicate_rows_in_file ?? 0)],
-    ["Duplicates DB Skipped", formatCount(upload.duplicates_found ?? 0)],
     ["Notifications Sent", formatCount(upload.notifications_count ?? 0)],
     ["Processing Time", upload.processing_time_ms ? `${upload.processing_time_ms} ms` : "-"],
   ];

@@ -234,7 +234,7 @@ export default function OutwardMonitor() {
         <input
           value={filters.search}
           onChange={(event) => setFilter("search", event.target.value)}
-          placeholder="Search FNR, station, division, commodity, company..."
+          placeholder="Search Unique Code, FNR, station, division, commodity, company..."
           className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
         />
       </div>
@@ -264,12 +264,13 @@ export default function OutwardMonitor() {
             <thead>
               <tr className="border-b border-border bg-muted/40">
                 {[
+                  "Unique Code",
                   "Rake Outward / FNR",
                   "Source Station",
                   "District (Source)",
                   "State (Source)",
                   "Company",
-                  "Product",
+                  "Commodity",
                   "Rake Commodity (Rake CMDT)",
                   "Wagons",
                   "Destination Station",
@@ -286,7 +287,7 @@ export default function OutwardMonitor() {
               {loading ? (
                 [...Array(5)].map((_, row) => (
                   <tr key={row} className="border-b border-border/50">
-                    {[...Array(11)].map((__, col) => (
+                    {[...Array(12)].map((__, col) => (
                       <td key={col} className="px-4 py-3">
                         <div className="h-4 animate-pulse rounded bg-muted" />
                       </td>
@@ -295,19 +296,22 @@ export default function OutwardMonitor() {
                 ))
               ) : pageRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={12} className="px-4 py-10 text-center text-sm text-muted-foreground">
                     No outward records.
                   </td>
                 </tr>
               ) : (
-                pageRecords.map((record) => (
+                pageRecords.map((record, idx) => (
                   <tr key={record.id} onClick={() => setSelectedRecord(record)} className="cursor-pointer border-b border-border/50 transition-colors hover:bg-muted/30">
+                    <td className="px-4 py-3 font-mono text-xs font-bold text-blue-600 dark:text-blue-400 whitespace-nowrap">
+                      {record.unique_rake_code || `Rake/${String(idx + 1).padStart(2, '0')} (No.${getFnr(record)} | ${record.departure_date || '-'})`}
+                    </td>
                     <td className="px-4 py-3 font-mono text-xs font-medium text-primary">{getFnr(record)}</td>
                     <td className="px-4 py-3 text-xs font-medium text-blue-700">{formatStationNameAndCode(record.station_from)}</td>
                     <td className="px-4 py-3 text-xs text-foreground">{getSourceDistrict(record) || "-"}</td>
                     <td className="px-4 py-3 text-xs text-foreground">{getSourceState(record) || "-"}</td>
                     <td className="px-4 py-3 text-xs text-foreground">{getCompanyDisplay(record) || "-"}</td>
-                    <td className="px-4 py-3 text-xs text-foreground">{getProductDisplay(record) || "-"}</td>
+                    <td className="px-4 py-3 text-xs text-foreground font-semibold">{record.commodity || getProductDisplay(record) || "-"}</td>
                     <td className="px-4 py-3 text-xs text-foreground">{getRakeCmdtDisplay(record) || "-"}</td>
                     <td className="px-4 py-3 text-center text-xs text-foreground">{record.wagons || "-"}</td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{formatStationNameAndCode(record.station_to)}</td>
@@ -368,90 +372,40 @@ function PageButton({ children, onClick, disabled }) {
   );
 }
 
-function recordMatchesSearch(record, query) {
-  if (!query) return true;
-  return [
-    getFnr(record),
-    record.division,
-    record.station_from,
-    record.station_to,
-    getSourceState(record),
-    getSourceDistrict(record),
-    getCompanyDisplay(record),
-    getProductDisplay(record),
-    getCommodityDisplay(record),
-    getRakeCmdtDisplay(record),
-  ]
-    .filter(Boolean)
-    .some((value) => String(value).toLowerCase().includes(query));
-}
-
-function mapOptions(map) {
-  return [...map.entries()]
-    .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
-    .map(([value, label]) => ({ value, label, searchText: `${label} ${value}` }));
-}
-
-function readRaw(record, ...keys) {
-  for (const key of keys) {
-    const value = record?.raw_data?.[key] ?? record?.[key];
-    if (value !== undefined && value !== null && String(value).trim() !== "") return value;
-  }
-  return "";
-}
-
-function getCommodityCode(record) {
-  return String(record.commodity_code || record.commodity || readRaw(record, "CMDT", "Commodity") || "").trim();
-}
-
-function getCommodityDisplay(record) {
-  return record.commodity_name || readRaw(record, "CMDT", "Commodity", "Commodity Name") || record.commodity || record.commodity_code || "";
-}
-
-function getCompanyDisplay(record) {
-  return (
-    record.company_name ||
-    record.company_full_name ||
-    record.company ||
-    record.company_code ||
-    readRaw(record, "Company", "Company Name", "CompanyName", "CNSR", "cnsr", "Consignor", "Consignor Code", "Consignor Name") ||
-    ""
-  );
-}
-
-function getProductDisplay(record) {
-  return (
-    record.product_name ||
-    record.product_code ||
-    record.product ||
-    readRaw(record, "Product", "Product Name", "ProductName", "Product Code", "ProductCode") ||
-    ""
-  );
-}
-
-function getSourceState(record) {
-  return record.from_state || readRaw(record, "State (Source)", "State Source", "StateSource") || getStationMeta(record.station_from)?.state || "";
+function getFnr(record) {
+  return record.odr_number || record.indent_no || record.fnr || "-";
 }
 
 function getSourceDistrict(record) {
-  return record.from_district || readRaw(record, "District (Source)", "District Source", "DistrictSource") || getStationMeta(record.station_from)?.district || "";
+  return record.source_district || record.district_from || "";
 }
 
-function getFnr(record) {
-  return readRaw(record, "FNR", "FNR No", "FNR Number") || record.fnr || record.odr_number || "";
+function getSourceState(record) {
+  return record.source_state || record.state_from || "";
+}
+
+function getCompanyDisplay(record) {
+  return record.company || record.company_code || record.cnsr || "-";
+}
+
+function getProductDisplay(record) {
+  return record.product || record.product_code || record.commodity || "-";
+}
+
+function readRaw(record, ...keys) {
+  const raw = record.raw_data || {};
+  for (const k of keys) {
+    if (raw[k] !== undefined && raw[k] !== null && raw[k] !== "") return raw[k];
+  }
+  return "";
 }
 
 const formatDateTime = formatFoisDateTime;
 
 function buildFilterName(filters) {
-  const parts = [
-    filters.search,
-    ...filters.division,
-    ...filters.states,
-    ...filters.districts,
-    ...filters.stations,
-    ...filters.commodities,
-    ...filters.rakeCmdts,
-  ].filter(Boolean);
-  return parts.slice(0, 4).join(" + ") || "Outward Monitor Filter";
+  const parts = [];
+  if (filters.zone?.length) parts.push(`Zone:${filters.zone.join(",")}`);
+  if (filters.division?.length) parts.push(`Div:${filters.division.join(",")}`);
+  if (filters.stations?.length) parts.push(`Stn:${filters.stations.join(",")}`);
+  return parts.join(" | ") || "Custom Filter";
 }

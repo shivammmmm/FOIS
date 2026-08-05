@@ -22,20 +22,21 @@ const REPORT_SOURCE = "FOIS Reports";
 let reportSessionCache = null;
 
 const SHEET_COLUMNS = [
-  "DVSN",
-  "STTN FROM",
-  "NO.",
-  "DATE",
-  "TIME",
+  "Unique Code",
+  "Zone",
+  "Division",
+  "Stn From",
+  "Indent Demand (No. Date Time)",
   "CNSR",
   "CNSG",
   "CMDT",
-  "RAKE CMDT",
+  "Rake CMDT",
   "Upload Date",
   "DSTN",
-  "INDENTED UNTS",
-  "SUPPLIED UNTS",
-  "SUPPLIED TIME",
+  "Units (Demand)",
+  "Units (Supplied)",
+  "Supplied",
+  "Matured",
 ];
 
 const DEFAULT_FILTERS = {
@@ -48,12 +49,7 @@ const DEFAULT_FILTERS = {
 
 export default function FreightTracker() {
   const { user } = useAuth();
-  const [searchParams] = useSearchParams();
-  const initialSearch = searchParams.get("odr") || "";
   const didLoadPersisted = useRef(false);
-
-  const cachedForUser = reportSessionCache?.userId === user?.id ? reportSessionCache : null;
-  const [records, setRecords] = useState(cachedForUser?.records || []);
   const [uploadDates] = useState(new Map());
   const [uploadDateError, setUploadDateError] = useState("");
   const [savedFilters, setSavedFilters] = useState(cachedForUser?.savedFilters || []);

@@ -4,6 +4,9 @@
   "type": "object",
   "properties": {
     "user_id": { "type": "string" },
+    "preset_code": { "type": "string" },
+    "preset_name": { "type": "string" },
+    "cnsg": { "type": "array" },
     "inward_enabled": { "type": "boolean", "default": true },
     "outward_enabled": { "type": "boolean", "default": true },
     "delayed_enabled": { "type": "boolean", "default": true },

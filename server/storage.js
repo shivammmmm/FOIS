@@ -467,6 +467,8 @@ async function createEntityTable(tableName) {
       CREATE TABLE IF NOT EXISTS user_notification_preferences (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL,
+        preset_code TEXT,
+        preset_name TEXT,
         inward_enabled BOOLEAN NOT NULL DEFAULT TRUE,
         outward_enabled BOOLEAN NOT NULL DEFAULT TRUE,
         delayed_enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -479,25 +481,16 @@ async function createEntityTable(tableName) {
       )
     `);
     await pool.query(
-      "ALTER TABLE user_notification_preferences ADD COLUMN IF NOT EXISTS inward_enabled BOOLEAN NOT NULL DEFAULT TRUE"
+      "ALTER TABLE user_notification_preferences ADD COLUMN IF NOT EXISTS preset_code TEXT"
     );
     await pool.query(
-      "ALTER TABLE user_notification_preferences ADD COLUMN IF NOT EXISTS outward_enabled BOOLEAN NOT NULL DEFAULT TRUE"
+      "ALTER TABLE user_notification_preferences ADD COLUMN IF NOT EXISTS preset_name TEXT"
     );
     await pool.query(
-      "ALTER TABLE user_notification_preferences ADD COLUMN IF NOT EXISTS delayed_enabled BOOLEAN NOT NULL DEFAULT TRUE"
+      "DROP INDEX IF EXISTS user_notification_preferences_user_id_idx"
     );
     await pool.query(
-      "ALTER TABLE user_notification_preferences ADD COLUMN IF NOT EXISTS missing_match_enabled BOOLEAN NOT NULL DEFAULT TRUE"
-    );
-    await pool.query(
-      "ALTER TABLE user_notification_preferences ADD COLUMN IF NOT EXISTS duplicate_enabled BOOLEAN NOT NULL DEFAULT TRUE"
-    );
-    await pool.query(
-      "ALTER TABLE user_notification_preferences ADD COLUMN IF NOT EXISTS new_movement_enabled BOOLEAN NOT NULL DEFAULT TRUE"
-    );
-    await pool.query(
-      "CREATE UNIQUE INDEX IF NOT EXISTS user_notification_preferences_user_id_idx ON user_notification_preferences (user_id)"
+      "CREATE INDEX IF NOT EXISTS user_notification_preferences_user_id_idx ON user_notification_preferences (user_id)"
     );
     return;
   }

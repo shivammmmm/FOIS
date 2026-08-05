@@ -43,11 +43,33 @@ function isNumericCode(value) {
   return s.length > 0 && /^\d+(\.\d+)?$/.test(s);
 }
 
+export function formatUniqueRakeCode(indentNo, dateStr, timeStr, seqIndex = 1) {
+  const no = String(indentNo || "-").trim();
+  let formattedDate = "-";
+  if (dateStr) {
+    const s = String(dateStr).trim();
+    // Handles formats like 05-Aug-2026, 2026-08-05, etc.
+    const d = new Date(s);
+    if (!isNaN(d.getTime())) {
+      const day = d.getDate();
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const month = months[d.getMonth()];
+      const year = String(d.getFullYear()).slice(-2);
+      formattedDate = `${day}-${month}-${year}`;
+    } else {
+      formattedDate = s;
+    }
+  }
+  let formattedTime = String(timeStr || "12:00 AM").trim();
+  const indexPadded = String(seqIndex).padStart(2, "0");
+  return `Rake/${indexPadded} (No.${no} | ${formattedDate} | ${formattedTime})`;
+}
+
 /**
  * Parse a raw Excel row (ODR file) into a FreightMovement record.
  * Uses normalized FOIS column names.
  */
-export function parseODRRow(row, batchId) {
+export function parseODRRow(row, batchId, seqIndex = 1) {
   const fields = getFoisFields(row);
   if (!fields.srNo || !fields.division || !fields.indentNo || isRepeatedHeaderRow(fields)) return null;
   if (isNumericCode(fields.division) || isNumericCode(fields.stationFrom)) return null;
@@ -64,12 +86,14 @@ export function parseODRRow(row, batchId) {
   const wagonType = fields.wagonType || (isWagon ? rawRakeCmdt : "");
 
   return {
+    unique_rake_code: formatUniqueRakeCode(fields.indentNo, fields.indentDate, fields.indentTime, seqIndex),
     odr_number: fields.indentNo,
     division: fields.division,
     station_from: fields.stationFrom,
     station_to: fields.destination,
     company: fields.cnsr,
     company_code: fields.cnsr,
+    cnsg: fields.cnsg || "-",
     commodity: fields.commodity,
     product: fields.product,
     product_code: fields.product,
@@ -78,6 +102,10 @@ export function parseODRRow(row, batchId) {
     rake_cmdt: !isWagon ? rawRakeCmdt : "",
     rake_commodity_code: !isWagon ? rawRakeCmdt : "",
     wagons: parseInt(fields.suppliedUnits, 10) || parseInt(fields.indented8w, 10) || parseInt(fields.indentedUnits, 10) || 0,
+    indented_units: parseInt(fields.indentedUnits, 10) || parseInt(fields.indented8w, 10) || 0,
+    supplied_units: parseInt(fields.suppliedUnits, 10) || 0,
+    supplied_time: fields.suppliedTime || "",
+    indent_time: fields.indentTime || "",
     arrival_date: normalizeDate(fields.expectedLoadingDate),
     departure_date: normalizeDate(fields.indentDate),
     movement_type: movementType,
@@ -92,7 +120,7 @@ export function parseODRRow(row, batchId) {
  * Parse a raw Excel row (Matured Indent file) into a MaturedIndent record.
  * Uses Matured Indent-specific FOIS column names.
  */
-export function parseIndentRow(row, batchId) {
+export function parseIndentRow(row, batchId, seqIndex = 1) {
   const fields = getFoisFields(row);
   if (!fields.srNo || !fields.division || !fields.indentNo || isRepeatedHeaderRow(fields)) return null;
   if (isNumericCode(fields.division) || isNumericCode(fields.stationFrom)) return null;
@@ -102,12 +130,14 @@ export function parseIndentRow(row, batchId) {
   const wagonType = fields.wagonType || (isWagon ? rawRakeCmdt : "");
 
   return {
+    unique_rake_code: formatUniqueRakeCode(fields.indentNo, fields.indentDate, fields.indentTime, seqIndex),
     indent_number: fields.indentNo,
     division: fields.division,
     station_from: fields.stationFrom,
     station_to: fields.destination,
     company: fields.cnsr,
     company_code: fields.cnsr,
+    cnsg: fields.cnsg || "-",
     commodity: fields.commodity,
     product: fields.product,
     product_code: fields.product,

@@ -793,31 +793,47 @@ export default function UploadCenter() {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto scrollbar-thin">
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border/80 bg-muted/30">
-                {['File / Payload', 'Zone', 'Version', 'Source', 'Type', 'Time', 'Parsed', 'Valid', 'Duplicates', 'Real Added', 'Status', ''].map(
-                  (h) => (
-                    <th
-                      key={h}
-                      className="px-4 py-3 text-left font-semibold text-muted-foreground whitespace-nowrap"
-                    >
-                      {h}
-                    </th>
-                  )
-                )}
+                {[
+                  { label: 'File / Payload', align: 'text-left' },
+                  { label: 'Zone', align: 'text-center' },
+                  { label: 'Version', align: 'text-center' },
+                  { label: 'Source', align: 'text-center' },
+                  { label: 'Type', align: 'text-center' },
+                  { label: 'Time', align: 'text-left' },
+                  { label: 'Parsed', align: 'text-center' },
+                  { label: 'Valid', align: 'text-center' },
+                  { label: 'Duplicates', align: 'text-center' },
+                  { label: 'Real Added', align: 'text-center' },
+                  { label: 'Status', align: 'text-center' },
+                ].map(({ label, align }) => (
+                  <th
+                    key={label}
+                    className={`px-3 py-3 font-semibold text-muted-foreground whitespace-nowrap ${align}`}
+                  >
+                    {label}
+                  </th>
+                ))}
+                <th className="px-3 py-3 font-semibold text-muted-foreground whitespace-nowrap text-center sticky right-0 bg-card z-20 border-l border-border/60 shadow-xs">
+                  Actions
+                </th>
               </tr>
             </thead>
             <tbody>
               {loadingLogs ? (
                 [...Array(4)].map((_, i) => (
                   <tr key={i} className="border-b border-border/50">
-                    {[...Array(12)].map((_, j) => (
-                      <td key={j} className="px-4 py-3">
+                    {[...Array(11)].map((_, j) => (
+                      <td key={j} className="px-3 py-3">
                         <div className="h-4 bg-muted rounded animate-pulse" />
                       </td>
                     ))}
+                    <td className="px-3 py-3 sticky right-0 bg-card z-20 border-l border-border/60">
+                      <div className="h-4 w-8 bg-muted rounded animate-pulse mx-auto" />
+                    </td>
                   </tr>
                 ))
               ) : filteredLogs.length === 0 ? (
@@ -828,19 +844,19 @@ export default function UploadCenter() {
                 </tr>
               ) : (
                 filteredLogs.map((log) => (
-                  <tr key={log.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
-                    <td className="px-4 py-3 max-w-xs truncate font-semibold text-foreground">
+                  <tr key={log.id} className="group border-b border-border/50 hover:bg-muted/30 transition-colors">
+                    <td className="px-3 py-2.5 max-w-[160px] truncate font-semibold text-foreground" title={log.file_name}>
                       {log.file_name}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
                       <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30">
                         {log.zone || 'ALL'}
                       </span>
                     </td>
-                    <td className="px-4 py-3 font-bold text-primary">
+                    <td className="px-3 py-2.5 text-center font-bold text-primary whitespace-nowrap">
                       v{log.version_number || 1}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
                       <span
                         className={`px-2 py-0.5 rounded-md text-[11px] font-semibold ${
                           log.source === 'Paste'
@@ -851,7 +867,7 @@ export default function UploadCenter() {
                         {log.source || 'Excel'}
                       </span>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
                       <span
                         className={`px-2 py-0.5 rounded-md text-[11px] font-semibold ${
                           log.file_type === 'ODR'
@@ -862,28 +878,28 @@ export default function UploadCenter() {
                         {log.file_type}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">
+                    <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
                       {log.upload_time ? new Date(log.upload_time).toLocaleString('en-IN') : '—'}
                     </td>
-                    <td className="px-4 py-3 text-center text-foreground font-medium">{log.records_parsed}</td>
-                    <td className="px-4 py-3 text-center text-emerald-400 font-bold">{log.records_valid}</td>
-                    <td className="px-4 py-3 text-center">
+                    <td className="px-3 py-2.5 text-center text-foreground font-medium whitespace-nowrap">{log.records_parsed}</td>
+                    <td className="px-3 py-2.5 text-center text-emerald-400 font-bold whitespace-nowrap">{log.records_valid}</td>
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
                       {log.duplicates_found > 0 ? (
                         <span className="text-orange-400 font-semibold">{log.duplicates_found}</span>
                       ) : (
                         <span className="text-muted-foreground">0</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-center font-extrabold text-emerald-500">
+                    <td className="px-3 py-2.5 text-center font-extrabold text-emerald-500 whitespace-nowrap">
                       +{log.real_added ?? Math.max(0, (log.records_valid || 0) - (log.duplicates_found || 0))}
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap">
                       <StatusBadge status={log.status} />
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-3 py-2.5 text-center whitespace-nowrap sticky right-0 bg-card group-hover:bg-muted/90 transition-colors z-10 border-l border-border/60 shadow-xs">
                       <button
                         onClick={() => handleDeleteLog(log)}
-                        className="p-1 rounded-lg text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                        className="p-1 rounded-lg text-red-400 hover:bg-red-500/15 hover:text-red-300 transition-colors cursor-pointer"
                         title="Delete Upload Log"
                       >
                         <Trash2 className="w-3.5 h-3.5" />

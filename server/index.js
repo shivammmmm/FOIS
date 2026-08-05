@@ -1297,15 +1297,16 @@ app.post(
           let sheetParsed = [];
           if (fileType === "ODR") {
             sheetParsed = sheetRows
-              .map((row) => parseODRRow(row, batchId))
+              .map((row, idx) => parseODRRow(row, batchId, idx + 1))
               .filter(Boolean);
           } else {
             let firstRejectedIndentRow = null;
             let firstRejectedIndentReason = "";
             sheetParsed = [];
 
-            for (const row of sheetRows) {
-              const parsed = parseIndentRow(row, batchId);
+            for (let idx = 0; idx < sheetRows.length; idx++) {
+              const row = sheetRows[idx];
+              const parsed = parseIndentRow(row, batchId, idx + 1);
               if (parsed) {
                 sheetParsed.push(parsed);
                 continue;
@@ -1327,7 +1328,7 @@ app.post(
               console.warn("[MaturedIndent Upload] first rejected row", {
                 sheetName,
                 reason: firstRejectedIndentReason,
-                row: firstRejectedIndentRow,
+                row: firstRejectedIndentReason,
               });
             }
           }
@@ -1359,6 +1360,9 @@ app.post(
 
       let insertedRecords = 0;
       let updatedRecords = 0;
+      let newIndentsAdded = 0;
+      let suppliedStatusUpdates = 0;
+      let maturedStatusUpdates = 0;
 
       const { Pool } = await import("pg");
       const databaseUrl =
@@ -1367,10 +1371,6 @@ app.post(
       const pool = new Pool({ connectionString: databaseUrl });
 
       if (fileType === "ODR") {
-        // odr_number alone repeats constantly across unrelated shipments (it's
-        // a small per-rake sequence, not a unique key), so duplicate detection
-        // uses the full shipment identity: same odr_number, route, commodity,
-        // and dates. Only a row matching ALL of these is a true duplicate.
         const buildDuplicateKey = (record) =>
           [
             record.odr_number,
@@ -1390,28 +1390,54 @@ app.post(
         const batchOdrNumbers = [...new Set(parsedRecords.map((r) => r.odr_number).filter(Boolean))];
         const existingRows = batchOdrNumbers.length
           ? await pool.query(
-              `SELECT data->>'odr_number' AS odr_number, data->>'station_from' AS station_from,
+              `SELECT id, data->>'odr_number' AS odr_number, data->>'station_from' AS station_from,
                       data->>'station_to' AS station_to, data->>'commodity' AS commodity,
-                      data->>'arrival_date' AS arrival_date, data->>'departure_date' AS departure_date
+                      data->>'arrival_date' AS arrival_date, data->>'departure_date' AS departure_date,
+                      data
                FROM freight_movements WHERE data->>'odr_number' = ANY($1::text[])`,
               [batchOdrNumbers]
             )
           : { rows: [] };
-        const existingKeySet = new Set(existingRows.rows.map((row) => buildDuplicateKey(row)));
-
-        parsedRecords = parsedRecords.map((record) => {
-          const key = buildDuplicateKey(record);
-          return {
-            ...record,
-            is_duplicate: countMap[key] > 1 || existingKeySet.has(key),
-          };
+        
+        const existingMap = new Map();
+        existingRows.rows.forEach((row) => {
+          existingMap.set(buildDuplicateKey(row), row);
         });
 
-        duplicatesFound = parsedRecords.filter((record) => record.is_duplicate).length;
+        const toInsert = [];
+        for (const record of parsedRecords) {
+          const key = buildDuplicateKey(record);
+          const existing = existingMap.get(key);
+          if (existing && record.supplied_time) {
+            // Update existing record status to Supplied
+            const updatedData = {
+              ...existing.data,
+              status: "Supplied",
+              supplied_time: record.supplied_time,
+              supplied_units: record.supplied_units || record.wagons,
+              wagons: record.wagons || existing.data.wagons,
+              cnsg: record.cnsg || existing.data.cnsg,
+              updated_at: new Date().toISOString(),
+            };
+            await pool.query(
+              `UPDATE freight_movements SET data = $1, updated_date = NOW() WHERE id = $2`,
+              [JSON.stringify(updatedData), existing.id]
+            );
+            suppliedStatusUpdates++;
+            updatedRecords++;
+          } else {
+            record.is_duplicate = countMap[key] > 1 || existingMap.has(key);
+            if (record.is_duplicate) duplicatesFound++;
+            else newIndentsAdded++;
+            toInsert.push(record);
+          }
+        }
 
-        await createRecords("FreightMovement", parsedRecords);
+        if (toInsert.length > 0) {
+          await createRecords("FreightMovement", toInsert);
+          insertedRecords = toInsert.length;
+        }
         await invalidateCachePrefix("movement:");
-        insertedRecords = parsedRecords.length;
         await createMovementPreferenceNotifications(parsedRecords, batchId).catch((error) => {
           console.error("[NotificationDelivery] movement preference notifications failed", {
             batchId,
@@ -1420,8 +1446,44 @@ app.post(
         });
 
       } else {
+        // MaturedIndent upload: match existing FreightMovement and update status to Matured
+        const batchIndentNumbers = [...new Set(parsedRecords.map((r) => r.indent_number).filter(Boolean))];
+        const existingMovements = batchIndentNumbers.length
+          ? await pool.query(
+              `SELECT id, data FROM freight_movements WHERE data->>'odr_number' = ANY($1::text[])`,
+              [batchIndentNumbers]
+            )
+          : { rows: [] };
+
+        const movementMap = new Map();
+        existingMovements.rows.forEach((row) => {
+          const num = row.data?.odr_number || row.data?.indent_number;
+          if (num) movementMap.set(String(num).trim(), row);
+        });
+
+        for (const record of parsedRecords) {
+          const match = movementMap.get(String(record.indent_number).trim());
+          if (match) {
+            record.odr_matched = true;
+            record.matched_odr_number = record.indent_number;
+            const updatedData = {
+              ...match.data,
+              status: "Matured",
+              matured_date: record.maturity_date || record.indent_date,
+              updated_at: new Date().toISOString(),
+            };
+            await pool.query(
+              `UPDATE freight_movements SET data = $1, updated_date = NOW() WHERE id = $2`,
+              [JSON.stringify(updatedData), match.id]
+            );
+            maturedStatusUpdates++;
+            updatedRecords++;
+          }
+        }
+
         await createRecords("MaturedIndent", parsedRecords);
         insertedRecords = parsedRecords.length;
+        await invalidateCachePrefix("movement:");
       }
 
       const totalValidAcrossSheets = sheetWiseStats.reduce(
@@ -1440,7 +1502,7 @@ app.post(
             ? (s.validRows || 0) / totalValidAcrossSheets
             : 0;
         s.insertedRows = Math.round(share * insertedRecords);
-        s.updatedRows = 0;
+        s.updatedRows = updatedRecords;
       }
 
       const uploadTime = new Date().toISOString();
@@ -1468,6 +1530,9 @@ app.post(
         failedSheets,
         insertedRecords,
         updatedRecords,
+        new_indents_added: newIndentsAdded,
+        supplied_status_updates: suppliedStatusUpdates,
+        matured_status_updates: maturedStatusUpdates,
         sheetWiseStats,
         duplicates_found: duplicatesFound,
         real_added: Math.max(0, recordsValid - duplicatesFound),

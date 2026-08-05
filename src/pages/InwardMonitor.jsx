@@ -234,7 +234,7 @@ export default function InwardMonitor() {
         <input
           value={filters.search}
           onChange={(event) => setFilter("search", event.target.value)}
-          placeholder="Search FNR, station, division, commodity, company..."
+          placeholder="Search Unique Code, FNR, station, division, commodity, company..."
           className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
         />
       </div>
@@ -264,16 +264,17 @@ export default function InwardMonitor() {
             <thead>
               <tr className="border-b border-border bg-muted/40">
                 {[
+                  "Unique Code",
                   "Rake Inward / FNR",
                   "Destination Station",
                   "District (To)",
                   "State (To)",
                   "Company",
-                  "Product",
+                  "Commodity",
                   "Rake Commodity (Rake CMDT)",
                   "Wagons",
                   "Source Station",
-                  "Departure Date",
+                  "Departure Date (Demand Date)",
                   "Arrival Date & Time",
                 ].map((header) => (
                   <th key={header} className="whitespace-nowrap px-4 py-3 text-left text-xs font-semibold text-muted-foreground">
@@ -286,7 +287,7 @@ export default function InwardMonitor() {
               {loading ? (
                 [...Array(5)].map((_, row) => (
                   <tr key={row} className="border-b border-border/50">
-                    {[...Array(11)].map((__, col) => (
+                    {[...Array(12)].map((__, col) => (
                       <td key={col} className="px-4 py-3">
                         <div className="h-4 animate-pulse rounded bg-muted" />
                       </td>
@@ -295,23 +296,26 @@ export default function InwardMonitor() {
                 ))
               ) : pageRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={12} className="px-4 py-10 text-center text-sm text-muted-foreground">
                     No inward records.
                   </td>
                 </tr>
               ) : (
-                pageRecords.map((record) => (
+                pageRecords.map((record, idx) => (
                   <tr key={record.id} onClick={() => setSelectedRecord(record)} className="cursor-pointer border-b border-border/50 transition-colors hover:bg-muted/30">
+                    <td className="px-4 py-3 font-mono text-xs font-bold text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
+                      {record.unique_rake_code || `Rake/${String(idx + 1).padStart(2, '0')} (No.${getFnr(record)} | ${record.departure_date || '-'})`}
+                    </td>
                     <td className="px-4 py-3 font-mono text-xs font-medium text-primary">{getFnr(record)}</td>
                     <td className="px-4 py-3 text-xs font-medium text-emerald-700">{formatStationNameAndCode(record.station_to)}</td>
                     <td className="px-4 py-3 text-xs text-foreground">{getDestinationDistrict(record) || "-"}</td>
                     <td className="px-4 py-3 text-xs text-foreground">{getDestinationState(record) || "-"}</td>
                     <td className="px-4 py-3 text-xs text-foreground">{getCompanyDisplay(record) || "-"}</td>
-                    <td className="px-4 py-3 text-xs text-foreground">{getProductDisplay(record) || "-"}</td>
+                    <td className="px-4 py-3 text-xs text-foreground font-semibold">{record.commodity || getProductDisplay(record) || "-"}</td>
                     <td className="px-4 py-3 text-xs text-foreground">{getRakeCmdtDisplay(record) || "-"}</td>
                     <td className="px-4 py-3 text-center text-xs text-foreground">{record.wagons || "-"}</td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{formatStationNameAndCode(record.station_from)}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatDateTime(record.departure_date, readRaw(record, "Departure Time", "Time")) || "-"}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap font-medium">{record.departure_date || "-"}</td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{formatDateTime(record.arrival_date, readRaw(record, "Arrival Time", "UpdatedTime")) || "-"}</td>
                   </tr>
                 ))
@@ -328,68 +332,6 @@ export default function InwardMonitor() {
       <FreightDetailsModal record={selectedRecord} onClose={() => setSelectedRecord(null)} />
     </div>
   );
-}
-
-function ActiveStationChips({ label, stations, onRemove }) {
-  return (
-    <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-border bg-muted/40 p-2.5">
-      <span className="mr-1 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">{label}:</span>
-      {stations.map((station) => (
-        <span key={station} className="inline-flex items-center gap-1 rounded border border-primary/20 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-          {formatStationNameAndCode(station)}
-          <button type="button" onClick={() => onRemove(station)} className="ml-0.5 font-bold hover:text-destructive">x</button>
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function Pagination({ page, totalPages, totalRecords, onPage }) {
-  return (
-    <div className="flex items-center justify-between border-t border-border bg-muted/30 px-4 py-3">
-      <span className="text-xs text-muted-foreground">
-        Page {page} of {totalPages} - {totalRecords} records
-      </span>
-      <div className="flex gap-2">
-        <PageButton onClick={() => onPage(1)} disabled={page === 1}>First</PageButton>
-        <PageButton onClick={() => onPage((value) => Math.max(1, value - 1))} disabled={page === 1}>Prev</PageButton>
-        <PageButton onClick={() => onPage((value) => Math.min(totalPages, value + 1))} disabled={page === totalPages}>Next</PageButton>
-        <PageButton onClick={() => onPage(totalPages)} disabled={page === totalPages}>Last</PageButton>
-      </div>
-    </div>
-  );
-}
-
-function PageButton({ children, onClick, disabled }) {
-  return (
-    <button type="button" onClick={onClick} disabled={disabled} className="rounded border border-border bg-muted px-3 py-1 text-xs text-foreground hover:bg-muted/80 disabled:opacity-40">
-      {children}
-    </button>
-  );
-}
-
-function recordMatchesSearch(record, query) {
-  if (!query) return true;
-  return [
-    getFnr(record),
-    record.division,
-    record.station_from,
-    record.station_to,
-    getDestinationState(record),
-    getDestinationDistrict(record),
-    getCompanyDisplay(record),
-    getProductDisplay(record),
-    getCommodityDisplay(record),
-    getRakeCmdtDisplay(record),
-  ]
-    .filter(Boolean)
-    .some((value) => String(value).toLowerCase().includes(query));
-}
-
-function mapOptions(map) {
-  return [...map.entries()]
-    .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
-    .map(([value, label]) => ({ value, label, searchText: `${label} ${value}` }));
 }
 
 function readRaw(record, ...keys) {
