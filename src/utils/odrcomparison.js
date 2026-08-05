@@ -38,6 +38,11 @@ function isWagonType(value) {
   return /^(BOX|BOB|BOS|BCN|BTP|NMG)/.test(val);
 }
 
+function isNumericCode(value) {
+  const s = String(value || "").trim();
+  return s.length > 0 && /^\d+(\.\d+)?$/.test(s);
+}
+
 /**
  * Parse a raw Excel row (ODR file) into a FreightMovement record.
  * Uses normalized FOIS column names.
@@ -45,6 +50,7 @@ function isWagonType(value) {
 export function parseODRRow(row, batchId) {
   const fields = getFoisFields(row);
   if (!fields.srNo || !fields.division || !fields.indentNo || isRepeatedHeaderRow(fields)) return null;
+  if (isNumericCode(fields.division) || isNumericCode(fields.stationFrom)) return null;
 
   const movementType = detectMovementType(fields.pc, fields.indentType, fields.tt);
   const status = detectStatus({
@@ -89,6 +95,7 @@ export function parseODRRow(row, batchId) {
 export function parseIndentRow(row, batchId) {
   const fields = getFoisFields(row);
   if (!fields.srNo || !fields.division || !fields.indentNo || isRepeatedHeaderRow(fields)) return null;
+  if (isNumericCode(fields.division) || isNumericCode(fields.stationFrom)) return null;
 
   const rawRakeCmdt = fields.rakeCmdt || "";
   const isWagon = isWagonType(rawRakeCmdt);
@@ -125,9 +132,16 @@ export function getIndentRowRejectionReason(row) {
   if (!fields.srNo) missing.push('S.NO.');
   if (!fields.division) missing.push('DVSN');
   if (!fields.indentNo) missing.push('NO.');
-  return missing.length
-    ? `Missing required Matured Indent field(s): ${missing.join(', ')}`
-    : '';
+  if (missing.length) {
+    return `Missing required Matured Indent field(s): ${missing.join(', ')}`;
+  }
+  if (isNumericCode(fields.division)) {
+    return `Invalid numeric division code: "${fields.division}" (unmapped date/number serial)`;
+  }
+  if (isNumericCode(fields.stationFrom)) {
+    return `Invalid numeric station code: "${fields.stationFrom}"`;
+  }
+  return '';
 }
 
 function getFoisFields(row) {
