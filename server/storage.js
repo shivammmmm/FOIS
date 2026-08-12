@@ -15,9 +15,9 @@ import {
   ensureStationMasterTable,
 } from "./utils/masterCatalogMigration.js";
 
-const DATABASE_URL =
-  process.env.DATABASE_URL ||
-  "postgresql://fois_user:fois_password@localhost:5432/fois_db";
+import { getDbPool, pool } from "./db/pool.js";
+
+let activeStorage = "json";
 
 const ENTITY_TABLES = {
   FreightMovement: "freight_movements",
@@ -107,8 +107,7 @@ const USER_PROFILE_ENTITIES = new Set([
   "SavedFilter",
 ]);
 
-const pool = new Pool({ connectionString: DATABASE_URL });
-let activeStorage = "json";
+// pool is declared at top of file
 
 const nowIso = () => new Date().toISOString();
 const generateId = () =>
@@ -585,13 +584,11 @@ async function createEntityTable(tableName) {
 
 export async function initializeStorage() {
   try {
+    await getDbPool();
     await pool.query("SELECT 1");
-    console.log("✓ PostgreSQL Connected");
   } catch (error) {
     activeStorage = "json";
-    console.warn(
-      `PostgreSQL unavailable; JSON storage active: ${error.message}`
-    );
+    console.warn(`PostgreSQL unavailable; JSON storage active: ${error.message}`);
     return;
   }
 
@@ -601,7 +598,7 @@ export async function initializeStorage() {
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         username TEXT UNIQUE NOT NULL,
-        email TEXT UNIQUE NOT NULL,
+        email TEXT UNIQUE,
         full_name TEXT,
         role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin', 'user')),
         password_hash TEXT NOT NULL,
@@ -609,6 +606,27 @@ export async function initializeStorage() {
         updated_date TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
+    // Sign-up now lets a user register with email OR mobile (either optional, at
+    // least one required) plus a first/last name and business category — see
+    // /api/auth/signup. Applied as ALTER statements (not baked into the CREATE
+    // TABLE above) so this stays idempotent against the already-running database.
+    await pool.query("ALTER TABLE users ALTER COLUMN email DROP NOT NULL").catch(() => undefined);
+    for (const [column, definition] of [
+      ["first_name", "TEXT"],
+      ["last_name", "TEXT"],
+      ["mobile", "TEXT UNIQUE"],
+      ["category", "TEXT"],
+      ["auth_provider", "TEXT NOT NULL DEFAULT 'password'"],
+    ]) {
+      await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${column} ${definition}`);
+    }
+    await pool.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_email_or_mobile_required') THEN
+          ALTER TABLE users ADD CONSTRAINT users_email_or_mobile_required CHECK (email IS NOT NULL OR mobile IS NOT NULL);
+        END IF;
+      END $$;
+    `).catch((error) => console.error("[Migration] users_email_or_mobile_required constraint failed:", error.message));
 
     const catalogMigration = await ensureMasterCatalogSchema(pool);
     console.log("✓ Catalog Table Ensured");
@@ -671,7 +689,7 @@ export async function ensureSuperAdminExists(superAdmin) {
 export async function findUserByIdentifier(identifier) {
   if (activeStorage === "postgres") {
     const result = await pool.query(
-      "SELECT * FROM users WHERE username = $1 OR email = $1 LIMIT 1",
+      "SELECT * FROM users WHERE username = $1 OR email = $1 OR mobile = $1 LIMIT 1",
       [String(identifier)]
     );
     return result.rows[0] || null;
@@ -683,7 +701,8 @@ export async function findUserByIdentifier(identifier) {
     users.find(
       (user) =>
         String(user.username) === String(identifier) ||
-        String(user.email) === String(identifier)
+        String(user.email) === String(identifier) ||
+        String(user.mobile) === String(identifier)
     ) || null
   );
 }
@@ -706,8 +725,13 @@ export async function createUser(user) {
   const next = {
     id: user.id || `user_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     username: String(user.username),
-    email: String(user.email),
-    full_name: user.full_name || String(user.username),
+    email: user.email ? String(user.email) : null,
+    mobile: user.mobile ? String(user.mobile) : null,
+    first_name: user.first_name ? String(user.first_name) : null,
+    last_name: user.last_name ? String(user.last_name) : null,
+    category: user.category ? String(user.category) : null,
+    auth_provider: user.auth_provider || "password",
+    full_name: user.full_name || [user.first_name, user.last_name].filter(Boolean).join(" ") || String(user.username),
     role: user.role || "user",
     password_hash: user.password_hash,
     created_date: user.created_date || nowIso(),
@@ -715,13 +739,18 @@ export async function createUser(user) {
 
   if (activeStorage === "postgres") {
     const result = await pool.query(
-      `INSERT INTO users (id, username, email, full_name, role, password_hash, created_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO users (id, username, email, mobile, first_name, last_name, category, auth_provider, full_name, role, password_hash, created_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING *`,
       [
         next.id,
         next.username,
         next.email,
+        next.mobile,
+        next.first_name,
+        next.last_name,
+        next.category,
+        next.auth_provider,
         next.full_name,
         next.role,
         next.password_hash,
@@ -1026,8 +1055,35 @@ export async function createRecord(entityName, record) {
 
 export async function createRecords(entityName, records) {
   assertEntity(entityName);
+  const recordList = Array.isArray(records) ? records.filter(Boolean) : [];
+  if (recordList.length === 0) return [];
+
+  if (activeStorage === "postgres") {
+    const tableName = ENTITY_TABLES[entityName];
+    const created = [];
+    const chunkSize = 500;
+    for (let i = 0; i < recordList.length; i += chunkSize) {
+      const chunk = recordList.slice(i, i + chunkSize);
+      const values = [];
+      const placeholders = chunk.map((rec, idx) => {
+        const offset = idx * 3;
+        values.push(String(rec.id), rec, rec.created_date || nowIso());
+        return `($${offset + 1}, $${offset + 2}, $${offset + 3})`;
+      });
+
+      await pool.query(
+        `INSERT INTO ${tableName} (id, data, created_date)
+         VALUES ${placeholders.join(",")}
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_date = NOW()`,
+        values
+      );
+      created.push(...chunk);
+    }
+    return created;
+  }
+
   const created = [];
-  for (const record of Array.isArray(records) ? records : []) {
+  for (const record of recordList) {
     created.push(await createRecord(entityName, record));
   }
   return created;

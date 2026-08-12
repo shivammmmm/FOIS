@@ -9,7 +9,13 @@ import {
 } from "@/utils/freightRecordFilters";
 import { formatStationNameAndCode, getStationMeta, registerStationMetaFromRecords } from "@/utils/stationMaster";
 import { buildFilterHierarchyOptions } from "@/utils/filterHierarchy";
-import { formatFoisDateTime } from "@/utils/foisDateTime";
+import {
+  getDemandUnits as getCanonicalDemandUnits,
+  getSuppliedUnits as getCanonicalSuppliedUnits,
+  getSuppliedTimeText,
+  getMaturedDateText,
+} from "@/utils/foisLifecycle";
+import { formatFoisDate, formatFoisDateTime, formatFoisTime } from "@/utils/foisDateTime";
 import {
   clearPersistentFilters,
   hasSavedFilterValues,
@@ -31,6 +37,9 @@ const DEFAULT_FILTERS = {
   stations: [],
   commodities: [],
   rakeCmdts: [],
+  cnsr: [],
+  cnsg: [],
+  status: "all",
 };
 
 export default function OutwardMonitor() {
@@ -44,7 +53,7 @@ export default function OutwardMonitor() {
   const [page, setPage] = useState(1);
   const [totalRecords, setTotalRecords] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
-  const [options, setOptions] = useState({ commodities: [], rakeCmdts: [] });
+  const [options, setOptions] = useState({ commodities: [], rakeCmdts: [], cnsr: [], cnsg: [] });
   const [hierarchy, setHierarchy] = useState(null);
 
   const scoped = buildFilterHierarchyOptions(hierarchy || {}, {
@@ -59,7 +68,22 @@ export default function OutwardMonitor() {
     const load = async () => {
       setLoading(true);
       try {
-        const data = await base44.movements.page({ direction: "Outward", page, limit: PER_PAGE, search: filters.search, division: filters.division, state: filters.states, district: filters.districts, station: filters.stations, commodity: filters.commodities, rake: filters.rakeCmdts });
+        const data = await base44.movements.page({
+          direction: "Outward",
+          page,
+          limit: PER_PAGE,
+          search: filters.search,
+          zone: filters.zone,
+          division: filters.division,
+          state: filters.states,
+          district: filters.districts,
+          station: filters.stations,
+          commodity: filters.commodities,
+          rake: filters.rakeCmdts,
+          cnsr: filters.cnsr,
+          cnsg: filters.cnsg,
+          status: filters.status !== "all" ? filters.status : undefined,
+        });
         registerStationMetaFromRecords(data.items || []);
         setAllRecords(data.items || []);
         setTotalRecords(data.total || 0);
@@ -80,7 +104,7 @@ export default function OutwardMonitor() {
       user?.id ? base44.entities.SavedFilter.filter({ user_id: user.id }, "-created_at", 100) : Promise.resolve([]),
     ]).then(([summary, hierarchyData, rows]) => {
       const source = summary.options || {};
-      setOptions({ commodities: source.commodity || [], rakeCmdts: source.rake || [] });
+      setOptions({ commodities: source.commodity || [], rakeCmdts: source.rake || [], cnsr: source.cnsr || [], cnsg: source.cnsg || [] });
       setHierarchy(hierarchyData);
       setSavedFilters((rows || []).filter((row) => row.source === SAVED_SOURCE));
     }).catch((error) => console.error("[OutwardMonitor] options load failed:", error));
@@ -115,6 +139,9 @@ export default function OutwardMonitor() {
       stations: normalizeMultiValue(nextFilters.stations ?? nextFilters.selectedStations),
       commodities: normalizeMultiValue(nextFilters.commodities ?? nextFilters.filterComm),
       rakeCmdts: normalizeMultiValue(nextFilters.rakeCmdts ?? nextFilters.filterRakeCmdt),
+      cnsr: normalizeMultiValue(nextFilters.cnsr),
+      cnsg: normalizeMultiValue(nextFilters.cnsg),
+      status: nextFilters.status || "all",
     });
     resetPage();
   }
@@ -189,6 +216,20 @@ export default function OutwardMonitor() {
             setFilters((prev) => ({ ...prev, rakeCmdts: value }));
             resetPage();
           }} options={scoped.rakeCmdts.length ? scoped.rakeCmdts : options.rakeCmdts} placeholder="All Rake Commodities" />
+          <MultiSelectFilter label="Consignor (CNSR)" selected={filters.cnsr} onChange={(value) => setFilter("cnsr", value)} options={options.cnsr} placeholder="All Consignors" />
+          <MultiSelectFilter label="Consignee (CNSG)" selected={filters.cnsg} onChange={(value) => setFilter("cnsg", value)} options={options.cnsg} placeholder="All Consignees" />
+
+          <select
+            value={filters.status || "all"}
+            onChange={(event) => setFilter("status", event.target.value)}
+            className="rounded-lg border border-border bg-muted px-3 py-2 text-sm font-medium text-foreground outline-none transition-colors hover:border-primary/50"
+          >
+            <option value="all">📋 All Status / Stage</option>
+            <option value="supplied">🚚 Supplied Data Only</option>
+            <option value="matured">🎯 Matured Data Only</option>
+            <option value="both">⚡ Supplied & Matured Both</option>
+            <option value="pending">⏳ Pending / Unsupplied</option>
+          </select>
 
           {savedFilters.length > 0 && (
             <select
@@ -234,7 +275,7 @@ export default function OutwardMonitor() {
         <input
           value={filters.search}
           onChange={(event) => setFilter("search", event.target.value)}
-          placeholder="Search Unique Code, FNR, station, division, commodity, company..."
+          placeholder="Search Rack ID / Rake Ref, Demand No, station, division, commodity, company..."
           className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
         />
       </div>
@@ -262,32 +303,34 @@ export default function OutwardMonitor() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-border bg-muted/40">
-                {[
-                  "Unique Code",
-                  "Rake Outward / FNR",
-                  "Source Station",
-                  "District (Source)",
-                  "State (Source)",
-                  "Company",
-                  "Commodity",
-                  "Rake Commodity (Rake CMDT)",
-                  "Wagons",
-                  "Destination Station",
-                  "Departure Date",
-                  "Arrival Date & Time",
-                ].map((header) => (
-                  <th key={header} className="whitespace-nowrap px-4 py-3 text-left text-xs font-semibold text-muted-foreground">
-                    {header}
-                  </th>
-                ))}
+              <tr className="border-b border-border bg-muted/40 text-xs font-semibold text-muted-foreground">
+                <th className="whitespace-nowrap px-4 py-3 text-left">Rack ID / Rake Ref</th>
+                <th className="whitespace-nowrap px-4 py-3 text-left">
+                  <div>Indent (Demand)</div>
+                  <div className="text-[10px] font-normal text-muted-foreground/80">No. | Date | Time</div>
+                </th>
+                <th className="whitespace-nowrap px-4 py-3 text-left font-bold text-blue-600 dark:text-blue-400 bg-blue-500/10">
+                  Source Stn
+                </th>
+                <th className="whitespace-nowrap px-4 py-3 text-left">District</th>
+                <th className="whitespace-nowrap px-4 py-3 text-left">State</th>
+                <th className="whitespace-nowrap px-4 py-3 text-left">CNSR</th>
+                <th className="whitespace-nowrap px-4 py-3 text-left">CMDT (Item Category)</th>
+                <th className="whitespace-nowrap px-4 py-3 text-left">RCMDT (Item)</th>
+                <th className="whitespace-nowrap px-4 py-3 text-center">Units (Demand)</th>
+                <th className="whitespace-nowrap px-4 py-3 text-center">Units (Supplied)</th>
+                <th className="whitespace-nowrap px-4 py-3 text-left font-bold text-amber-600 dark:text-amber-400 bg-amber-500/10">
+                  Dstn
+                </th>
+                <th className="whitespace-nowrap px-4 py-3 text-left">Supplied</th>
+                <th className="whitespace-nowrap px-4 py-3 text-left">Matured</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 [...Array(5)].map((_, row) => (
                   <tr key={row} className="border-b border-border/50">
-                    {[...Array(12)].map((__, col) => (
+                    {[...Array(13)].map((__, col) => (
                       <td key={col} className="px-4 py-3">
                         <div className="h-4 animate-pulse rounded bg-muted" />
                       </td>
@@ -296,27 +339,32 @@ export default function OutwardMonitor() {
                 ))
               ) : pageRecords.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  <td colSpan={13} className="px-4 py-10 text-center text-sm text-muted-foreground">
                     No outward records.
                   </td>
                 </tr>
               ) : (
-                pageRecords.map((record, idx) => (
+                pageRecords.map((record) => (
                   <tr key={record.id} onClick={() => setSelectedRecord(record)} className="cursor-pointer border-b border-border/50 transition-colors hover:bg-muted/30">
                     <td className="px-4 py-3 font-mono text-xs font-bold text-blue-600 dark:text-blue-400 whitespace-nowrap">
-                      {record.unique_rake_code || `Rake/${String(idx + 1).padStart(2, '0')} (No.${getFnr(record)} | ${record.departure_date || '-'})`}
+                      {getUniqueRakeCodeDisplay(record)}
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs font-medium text-primary">{getFnr(record)}</td>
-                    <td className="px-4 py-3 text-xs font-medium text-blue-700">{formatStationNameAndCode(record.station_from)}</td>
+                    <td className="px-4 py-3 font-mono text-xs font-medium text-foreground whitespace-nowrap">
+                      {formatIndentDemandCombined(record)}
+                    </td>
+                    <td className="px-4 py-3 text-xs font-bold text-blue-700 dark:text-blue-300 bg-blue-500/5">
+                      {formatStationNameAndCode(record.station_from)}
+                    </td>
                     <td className="px-4 py-3 text-xs text-foreground">{getSourceDistrict(record) || "-"}</td>
                     <td className="px-4 py-3 text-xs text-foreground">{getSourceState(record) || "-"}</td>
-                    <td className="px-4 py-3 text-xs text-foreground">{getCompanyDisplay(record) || "-"}</td>
+                    <td className="px-4 py-3 text-xs text-foreground font-medium">{getCompanyDisplay(record) || "-"}</td>
                     <td className="px-4 py-3 text-xs text-foreground font-semibold">{record.commodity || getProductDisplay(record) || "-"}</td>
                     <td className="px-4 py-3 text-xs text-foreground">{getRakeCmdtDisplay(record) || "-"}</td>
-                    <td className="px-4 py-3 text-center text-xs text-foreground">{record.wagons || "-"}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatStationNameAndCode(record.station_to)}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatDateTime(record.departure_date, readRaw(record, "Departure Time", "Time")) || "-"}</td>
-                    <td className="px-4 py-3 text-xs text-muted-foreground">{formatDateTime(record.arrival_date, readRaw(record, "Arrival Time", "UpdatedTime")) || "-"}</td>
+                    <td className="px-4 py-3 text-center text-xs font-semibold text-foreground">{getIndentedUnits(record)}</td>
+                    <td className="px-4 py-3 text-center text-xs font-semibold text-emerald-600 dark:text-emerald-400">{getSuppliedUnits(record)}</td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground bg-amber-500/5 font-medium">{formatStationNameAndCode(record.station_to)}</td>
+                    <td className="px-4 py-3 text-xs text-foreground whitespace-nowrap">{renderSuppliedCell(record)}</td>
+                    <td className="px-4 py-3 text-xs text-foreground whitespace-nowrap">{renderMaturedCell(record)}</td>
                   </tr>
                 ))
               )}
@@ -376,12 +424,35 @@ function getFnr(record) {
   return record.odr_number || record.indent_no || record.fnr || "-";
 }
 
+function getUniqueRakeCodeDisplay(record) {
+  const code = record.unique_rake_code || "";
+  const fnr = getFnr(record);
+  const stn = record.station_from || record.station_to || "";
+  const prd = record.product || record.rake_cmdt || record.rake_commodity_code || record.commodity || "";
+
+  if (code && !code.startsWith("Rake/") && !code.includes("1984")) {
+    const parts = code.split("/");
+    if (parts.length >= 3) return code;
+    if (prd && !/^\d+(\.\d+)?$/.test(prd) && !["POL", "ALL"].includes(prd.toUpperCase())) {
+      return `${code}/${prd.toUpperCase()}`;
+    }
+    return code;
+  }
+
+  if (!fnr || fnr === "-") return record.id || "-";
+  let base = stn ? `RAKE-${fnr}/${stn.toUpperCase()}` : `ODR-${fnr}`;
+  if (prd && !/^\d+(\.\d+)?$/.test(prd) && !["POL", "ALL"].includes(prd.toUpperCase())) {
+    base += `/${prd.toUpperCase()}`;
+  }
+  return base;
+}
+
 function getSourceDistrict(record) {
-  return record.source_district || record.district_from || "";
+  return record.from_district || record.source_district || record.district_from || "";
 }
 
 function getSourceState(record) {
-  return record.source_state || record.state_from || "";
+  return record.from_state || record.source_state || record.state_from || "";
 }
 
 function getCompanyDisplay(record) {
@@ -396,14 +467,65 @@ function readRaw(record, ...keys) {
   const raw = record.raw_data || {};
   for (const k of keys) {
     if (raw[k] !== undefined && raw[k] !== null && raw[k] !== "") return raw[k];
+    const lowerKey = String(k).toLowerCase();
+    for (const rawKey of Object.keys(raw)) {
+      if (rawKey.toLowerCase() === lowerKey && raw[rawKey] !== undefined && raw[rawKey] !== null && raw[rawKey] !== "") {
+        return raw[rawKey];
+      }
+    }
   }
   return "";
 }
 
-const formatDateTime = formatFoisDateTime;
+function isNumericCode(val) {
+  const s = String(val || "").trim();
+  if (!s || !/^\d+(\.\d+)?$/.test(s)) return false;
+  const num = Number(s);
+  if (num >= 40000 && num <= 60000) return false;
+  return true;
+}
+
+function formatIndentDemandCombined(record) {
+  const fnr = getFnr(record);
+  const rawDateStr = record.departure_date || record.indent_date || record.demand_date || readRaw(record, "DATE", "DEMAND DATE", "INDENT DATE", "arrival_date");
+  const rawTimeStr = record.indent_time || record.demand_time || readRaw(record, "Time", "indent_time", "TIME", "DEMAND TIME", "INDENT TIME", "time");
+  const dateVal = isNumericCode(rawDateStr) ? "" : formatFoisDate(rawDateStr);
+  const timeVal = formatFoisTime(rawTimeStr);
+
+  if (!fnr || fnr === "-") return "-";
+  if (dateVal && dateVal !== "-") {
+    return `${fnr} (${dateVal}${timeVal && timeVal !== "-" ? ` ${timeVal}` : ""})`;
+  }
+  return fnr;
+}
+
+function getIndentedUnits(record) {
+  return getCanonicalDemandUnits(record);
+}
+
+function getSuppliedUnits(record) {
+  return getCanonicalSuppliedUnits(record);
+}
+
+function renderSuppliedCell(record) {
+  const formatted = getSuppliedTimeText(record);
+  if (formatted && formatted !== "-") {
+    return <span className="font-medium text-emerald-600 dark:text-emerald-400">{formatted}</span>;
+  }
+  return <span className="text-muted-foreground">-</span>;
+}
+
+function renderMaturedCell(record) {
+  const dateVal = getMaturedDateText(record);
+  if (dateVal && dateVal !== "-") {
+    return <span className="font-medium text-blue-600 dark:text-blue-400">{dateVal}</span>;
+  }
+  return <span className="text-muted-foreground">-</span>;
+}
 
 function buildFilterName(filters) {
   const parts = [];
+  if (filters.status && filters.status !== "all") parts.push(`Status:${filters.status}`);
   if (filters.zone?.length) parts.push(`Zone:${filters.zone.join(",")}`);
   if (filters.division?.length) parts.push(`Div:${filters.division.join(",")}`);
   if (filters.stations?.length) parts.push(`Stn:${filters.stations.join(",")}`);

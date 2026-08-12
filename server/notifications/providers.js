@@ -85,13 +85,13 @@ function preferenceMatches(preference, notification, context = {}) {
   const normalizedType = notifType.toLowerCase();
 
   // Check Stage Notification Preferences
-  if (["indentplaced", "demandcreated", "newrakedemand", "new_rake_demand"].some(t => normalizedType.includes(t))) {
+  if (["indentplaced", "demandcreated", "newrakedemand", "new_rake_demand", "newrackindent", "new_rack_indent"].some(t => normalizedType.includes(t))) {
     if (preference.notify_new_demand === false) return false;
   }
-  if (["indentsupplied", "partialsupplyupdated", "rakesupplied", "rake_supplied"].some(t => normalizedType.includes(t))) {
+  if (["indentsupplied", "partialsupplyupdated", "rakesupplied", "rake_supplied", "racksupplied", "rack_supplied"].some(t => normalizedType.includes(t))) {
     if (preference.notify_supplied === false) return false;
   }
-  if (["rakedispatched", "demandmatured", "demandcompleted", "rake_dispatched"].some(t => normalizedType.includes(t))) {
+  if (["rakedispatched", "demandmatured", "demandcompleted", "rake_dispatched", "rackdispatched", "rack_dispatched", "rackmatured"].some(t => normalizedType.includes(t))) {
     if (preference.notify_dispatched === false) return false;
   }
 

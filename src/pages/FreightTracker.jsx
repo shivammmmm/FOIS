@@ -5,7 +5,15 @@ import { base44 } from "@/api/base44Client";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
 import FreightDetailsModal from "@/components/FreightDetailsModal";
 import { useAuth } from "@/lib/AuthContext";
-import { registerStationMetaFromRecords } from "@/utils/stationMaster";
+import { getStationMeta, registerStationMetaFromRecords } from "@/utils/stationMaster";
+import { getZoneForDivision, getDivisionName, getStationName, getCommodityName, loadMasterHierarchy, useMasterHierarchy } from "@/utils/masterHierarchy";
+import { buildFilterHierarchyOptions } from "@/utils/filterHierarchy";
+import {
+  getDemandUnits,
+  getSuppliedUnits,
+  getSuppliedCombinedText,
+  getMaturedDateText,
+} from "@/utils/foisLifecycle";
 import { formatFoisDate, formatFoisTime } from "@/utils/foisDateTime";
 import {
   clearPersistentFilters,
@@ -39,17 +47,55 @@ const SHEET_COLUMNS = [
   "Matured",
 ];
 
+// table-fixed divides width equally across columns by default, which
+// wastes space on short columns (Zone, Matured) and starves long ones
+// (Stn From, CMDT), forcing heavy text wrapping and tall rows at normal
+// browser widths. Explicit proportional widths keep the table readable
+// without needing horizontal scroll or the wider layout browser zoom
+// happens to provide.
+// Percentages intentionally sum to under 100% (not exactly 100%) — table
+// layout rounds each column's pixel width independently, and border/padding
+// box math can push an exact 100% total a few pixels wider than the
+// container, forcing an unwanted horizontal scrollbar. The slack absorbs
+// that rounding instead of it spilling into a visible overflow.
+const COLUMN_WIDTHS = [
+  "8%", // Unique Code
+  "4%", // Zone
+  "7%", // Division
+  "8%", // Stn From
+  "9%", // Indent Demand (No. Date Time)
+  "4%", // CNSR
+  "4%", // CNSG
+  "9%", // CMDT
+  "5%", // Rake CMDT
+  "7%", // Upload Date
+  "8%", // DSTN
+  "5%", // Units (Demand)
+  "5%", // Units (Supplied)
+  "8%", // Supplied
+  "7%", // Matured
+];
+
 const DEFAULT_FILTERS = {
   search: "",
+  zones: [],
   divisions: [],
   stationsFrom: [],
   commodities: [],
+  rakeCmdts: [],
+  cnsr: [],
+  cnsg: [],
   destinations: [],
+  status: "all",
 };
 
 export default function FreightTracker() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
+  const initialSearch = searchParams.get("search") || "";
+  const cachedForUser = reportSessionCache?.userId === user?.id ? reportSessionCache : null;
   const didLoadPersisted = useRef(false);
+  const [records, setRecords] = useState(cachedForUser?.records || []);
   const [uploadDates] = useState(new Map());
   const [uploadDateError, setUploadDateError] = useState("");
   const [savedFilters, setSavedFilters] = useState(cachedForUser?.savedFilters || []);
@@ -59,10 +105,21 @@ export default function FreightTracker() {
   const [page, setPage] = useState(cachedForUser?.page || 1);
   const [totalRecords, setTotalRecords] = useState(cachedForUser?.totalRecords || 0);
   const [totalPages, setTotalPages] = useState(cachedForUser?.totalPages || 1);
-  const [filterOptions, setFilterOptions] = useState(cachedForUser?.filterOptions || { divisions: [], stationsFrom: [], commodities: [], destinations: [] });
+  const [filterOptions, setFilterOptions] = useState(cachedForUser?.filterOptions || { zones: [], divisions: [], stationsFrom: [], commodities: [], rakeCmdts: [], cnsr: [], cnsg: [], destinations: [] });
   const [debouncedSearch, setDebouncedSearch] = useState(filters.search);
   const [exporting, setExporting] = useState(false);
   const [showUnmappedOnly, setShowUnmappedOnly] = useState(false);
+  const { raw: hierarchy } = useMasterHierarchy();
+
+  const scoped = buildFilterHierarchyOptions(hierarchy || {}, {
+    zone: filters.zones,
+    division: filters.divisions,
+    commodity: filters.commodities,
+  });
+
+  useEffect(() => {
+    loadMasterHierarchy();
+  }, []);
 
   useEffect(() => {
     const id = window.setTimeout(() => setDebouncedSearch(filters.search), 350);
@@ -70,7 +127,13 @@ export default function FreightTracker() {
   }, [filters.search]);
 
   useEffect(() => {
-    const query = { page, limit: PER_PAGE, search: debouncedSearch, division: filters.divisions, stationFrom: filters.stationsFrom, commodity: filters.commodities, destination: filters.destinations, unmappedOnly: showUnmappedOnly };
+    const query = {
+      page, limit: PER_PAGE, search: debouncedSearch,
+      zone: filters.zones, division: filters.divisions,
+      stationFrom: filters.stationsFrom, commodity: filters.commodities, rake: filters.rakeCmdts,
+      cnsr: filters.cnsr, cnsg: filters.cnsg, destination: filters.destinations,
+      unmappedOnly: showUnmappedOnly, status: filters.status !== "all" ? filters.status : undefined,
+    };
     const queryKey = JSON.stringify(query);
     if (reportSessionCache?.userId === user?.id && reportSessionCache.queryKey === queryKey) {
       setLoading(false);
@@ -83,7 +146,11 @@ export default function FreightTracker() {
       const nextRecords = extractItems(data);
       registerStationMetaFromRecords(nextRecords);
       const options = data.options || {};
-      const nextOptions = { divisions: options.division || [], stationsFrom: options.stationFrom || [], commodities: options.commodity || [], destinations: options.destination || [] };
+      const nextOptions = {
+        zones: options.zone || [], divisions: options.division || [],
+        stationsFrom: options.stationFrom || [], commodities: options.commodity || [],
+        rakeCmdts: options.rake || [], cnsr: options.cnsr || [], cnsg: options.cnsg || [], destinations: options.destination || [],
+      };
       setRecords(nextRecords);
       setTotalRecords(data.total || 0);
       setTotalPages(data.totalPages || 1);
@@ -94,7 +161,7 @@ export default function FreightTracker() {
       if (current) setUploadDateError(error?.message || "FOIS Reports could not be loaded");
     }).finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  }, [debouncedSearch, filters.divisions, filters.stationsFrom, filters.commodities, filters.destinations, page, savedFilters, showUnmappedOnly, user?.id]);
+  }, [debouncedSearch, filters.zones, filters.divisions, filters.stationsFrom, filters.commodities, filters.rakeCmdts, filters.cnsr, filters.cnsg, filters.destinations, filters.status, page, savedFilters, showUnmappedOnly, user?.id]);
 
   useEffect(() => {
     if (!user?.id || savedFilters.length) return;
@@ -146,12 +213,17 @@ export default function FreightTracker() {
     setFilters((prev) => ({
       ...DEFAULT_FILTERS,
       search: keepUrlSearch ? prev.search : nextFilters.search || "",
+      zones: normalizeMultiValue(nextFilters.zones),
       divisions: normalizeMultiValue(nextFilters.divisions ?? nextFilters.filterDivision),
       stationsFrom: normalizeMultiValue(nextFilters.stationsFrom ?? nextFilters.stations),
       commodities: normalizeMultiValue(
         nextFilters.commodities ?? nextFilters.filterCommodity
       ),
+      rakeCmdts: normalizeMultiValue(nextFilters.rakeCmdts),
+      cnsr: normalizeMultiValue(nextFilters.cnsr),
+      cnsg: normalizeMultiValue(nextFilters.cnsg),
       destinations: normalizeMultiValue(nextFilters.destinations),
+      status: nextFilters.status || "all",
     }));
     resetPage();
   }
@@ -244,10 +316,20 @@ export default function FreightTracker() {
 
       <div className="flex flex-wrap gap-2">
         <MultiSelectFilter
+          label="Zone"
+          selected={filters.zones}
+          onChange={(value) => {
+            setFilters((prev) => ({ ...prev, zones: value, divisions: [] }));
+            resetPage();
+          }}
+          options={scoped.zones}
+          placeholder="All Zones"
+        />
+        <MultiSelectFilter
           label="DVSN"
           selected={filters.divisions}
           onChange={(value) => setFilter("divisions", value)}
-          options={filterOptions.divisions}
+          options={scoped.divisions}
           placeholder="All DVSN"
         />
         <MultiSelectFilter
@@ -260,9 +342,33 @@ export default function FreightTracker() {
         <MultiSelectFilter
           label="CMDT"
           selected={filters.commodities}
-          onChange={(value) => setFilter("commodities", value)}
+          onChange={(value) => {
+            setFilters((prev) => ({ ...prev, commodities: value, rakeCmdts: [] }));
+            resetPage();
+          }}
           options={filterOptions.commodities}
           placeholder="All CMDT"
+        />
+        <MultiSelectFilter
+          label="Rake CMDT"
+          selected={filters.rakeCmdts}
+          onChange={(value) => setFilter("rakeCmdts", value)}
+          options={scoped.rakeCmdts.length ? scoped.rakeCmdts : filterOptions.rakeCmdts}
+          placeholder="All Rake CMDT"
+        />
+        <MultiSelectFilter
+          label="CNSR"
+          selected={filters.cnsr}
+          onChange={(value) => setFilter("cnsr", value)}
+          options={filterOptions.cnsr}
+          placeholder="All Consignors"
+        />
+        <MultiSelectFilter
+          label="CNSG"
+          selected={filters.cnsg}
+          onChange={(value) => setFilter("cnsg", value)}
+          options={filterOptions.cnsg}
+          placeholder="All Consignees"
         />
         <MultiSelectFilter
           label="DSTN"
@@ -271,6 +377,17 @@ export default function FreightTracker() {
           options={filterOptions.destinations}
           placeholder="All DSTN"
         />
+        <select
+          value={filters.status || "all"}
+          onChange={(event) => setFilter("status", event.target.value)}
+          className="rounded-lg border border-border bg-muted px-3 py-2 text-sm font-medium text-foreground outline-none transition-colors hover:border-primary/50"
+        >
+          <option value="all">📋 All Status / Stage</option>
+          <option value="supplied">🚚 Supplied Data Only</option>
+          <option value="matured">🎯 Matured Data Only</option>
+          <option value="both">⚡ Supplied & Matured Both</option>
+          <option value="pending">⏳ Pending / Unsupplied</option>
+        </select>
         {savedFilters.length > 0 && (
           <select
             value=""
@@ -345,13 +462,18 @@ export default function FreightTracker() {
                 : "No records match your filters."}
             </div>
           ) : (
-            <table className="w-full min-w-[1380px] table-fixed text-xs">
+            <table className="w-full table-fixed border-collapse text-xs">
+              <colgroup>
+                {COLUMN_WIDTHS.map((width, index) => (
+                  <col key={SHEET_COLUMNS[index]} style={{ width }} />
+                ))}
+              </colgroup>
               <thead className="sticky top-0 z-10">
                 <tr className="bg-blue-700 text-white">
                   {SHEET_COLUMNS.map((header) => (
                     <th
                       key={header}
-                      className="border border-blue-800 px-2 py-2 text-left font-semibold uppercase tracking-wide"
+                      className="border border-blue-800 px-2 py-2 text-left font-semibold uppercase tracking-wide break-words"
                     >
                       {header}
                     </th>
@@ -368,7 +490,7 @@ export default function FreightTracker() {
                     }`}
                   >
                     {SHEET_COLUMNS.map((column) => (
-                      <td key={`${record.id}-${column}`} className="border border-slate-300 px-2 py-2 align-top text-slate-800">
+                      <td key={`${record.id}-${column}`} className="border border-slate-300 px-2 py-2 align-top text-slate-800 break-words">
                         {dash(row[column])}
                       </td>
                     ))}
@@ -434,7 +556,7 @@ function PageButton({ children, disabled, onClick }) {
 
 function LoadingTable() {
   return (
-    <div className="min-w-[1380px] p-4">
+    <div className="p-4">
       {[...Array(10)].map((_, row) => (
         <div key={row} className="mb-2 grid grid-cols-12 gap-2">
           {[...Array(12)].map((__, col) => (
@@ -446,6 +568,14 @@ function LoadingTable() {
   );
 }
 
+function isNumericCodeString(val) {
+  const s = String(val || "").trim();
+  if (!s || !/^\d+(\.\d+)?$/.test(s)) return false;
+  const num = Number(s);
+  if (num >= 40000 && num <= 60000) return false;
+  return true;
+}
+
 function buildSheetRow(record, uploadDates) {
   const uploadKey = normalizeBatchKey(
     record.upload_batch_id ||
@@ -454,21 +584,67 @@ function buildSheetRow(record, uploadDates) {
     record.raw_data?.upload_batch_id ||
     record.raw_data?.batch_id
   );
+
+  let dvsnCode = readValue(record, "DVSN", "division", "from_division") || "";
+  if (isNumericCodeString(dvsnCode)) dvsnCode = "";
+  const dvsn = dvsnCode ? getDivisionName(dvsnCode) : "";
+
+  let stnFromCode = readValue(record, "STTN FROM", "station_from") || "";
+  if (isNumericCodeString(stnFromCode)) stnFromCode = "";
+  const stnFrom = stnFromCode ? formatLiveStationNameAndCode(stnFromCode) : "";
+
+  const zone =
+    readValue(record, "Zone", "from_zone", "zone") ||
+    (dvsnCode ? getZoneForDivision(dvsnCode) : "") ||
+    (stnFromCode ? getStationMeta(stnFromCode)?.zone : "") ||
+    "";
+
+  const odrNo = readValue(record, "NO.", "indent_no", "FNR", "odr_number", "indent_number") || "";
+  const rawDateStr = readValue(record, "DATE", "indent_date", "departure_date", "arrival_date", "demand_date");
+  const dateVal = isNumericCodeString(rawDateStr) ? "" : formatFoisDate(rawDateStr);
+  const timeVal = formatFoisTime(readValue(record, "TIME", "indent_time", "Time", "demand_time"));
+
+  let indentDemandCombined = odrNo;
+  if (dateVal && dateVal !== "-") {
+    indentDemandCombined += ` (${dateVal}${timeVal && timeVal !== "-" ? ` ${timeVal}` : ""})`;
+  }
+
+  const cnsr = readValue(record, "CNSR", "cnsr", "company_code", "company") || "";
+  const cnsg = readValue(record, "CNSG", "cnsg") || "";
+  const cmdtCode = readValue(record, "CMDT", "Commodity", "commodity_code", "commodity") || "";
+  const cmdt = cmdtCode ? getCommodityName(cmdtCode) : "";
+  const rakeCmdt = readValue(record, "Rake CMDT", "RAKE CMDT", "Rake CMDT", "rake_commodity_code", "rake_cmdt", "product", "product_code") || "";
+
+  const uniqueCode =
+    (record.unique_rake_code && !record.unique_rake_code.includes("1984") && !record.unique_rake_code.startsWith("Rake/"))
+      ? record.unique_rake_code
+      : (odrNo ? (stnFromCode ? `RAKE-${odrNo}/${stnFromCode}${rakeCmdt && !isNumericCodeString(rakeCmdt) ? `/${rakeCmdt}` : ""}` : `ODR-${odrNo}`) : (record.id || ""));
+
+  let stnToCode = readValue(record, "DSTN", "station_to") || "";
+  if (isNumericCodeString(stnToCode)) stnToCode = "";
+  const dstn = stnToCode ? formatLiveStationNameAndCode(stnToCode) : "";
+
+  const indentedUnits = getDemandUnits(record);
+  const suppliedUnits = getSuppliedUnits(record);
+  const supplied = getSuppliedCombinedText(record);
+  const matured = getMaturedDateText(record);
+
   return {
-    DVSN: readValue(record, "DVSN", "division"),
-    "STTN FROM": readValue(record, "STTN FROM", "station_from"),
-    "NO.": readValue(record, "NO.", "indent_no", "FNR", "odr_number"),
-    DATE: formatFoisDate(readValue(record, "DATE", "indent_date", "departure_date")),
-    TIME: formatFoisTime(readValue(record, "TIME", "indent_time", "Time")),
-    CNSR: readValue(record, "CNSR", "cnsr", "company_code", "company"),
-    CNSG: readValue(record, "CNSG", "cnsg"),
-    CMDT: readValue(record, "CMDT", "Commodity", "commodity_code", "commodity"),
-    "RAKE CMDT": readValue(record, "RAKE CMDT", "Rake CMDT", "rake_commodity_code", "rake_cmdt"),
-    "Upload Date": formatUploadDate(record.upload_date || uploadDates.get(uploadKey)),
-    DSTN: readValue(record, "DSTN", "station_to"),
-    "INDENTED UNTS": readValue(record, "INDENTED UNTS", "indented_units"),
-    "SUPPLIED UNTS": readValue(record, "SUPPLIED UNTS", "supplied_units", "wagons"),
-    "SUPPLIED TIME": formatFoisTime(readValue(record, "SUPPLIED TIME", "supplied_time", "UpdatedTime")),
+    "Unique Code": uniqueCode,
+    Zone: zone,
+    Division: dvsn,
+    "Stn From": stnFrom,
+    "Indent Demand (No. Date Time)": indentDemandCombined,
+    CNSR: cnsr,
+    CNSG: cnsg,
+    CMDT: cmdt,
+    "Rake CMDT": rakeCmdt,
+    "Upload Date": formatUploadDate(record.upload_date || uploadDates.get(uploadKey) || record.created_date),
+    DSTN: dstn,
+    "Units (Demand)": indentedUnits,
+    "Units (Supplied)": suppliedUnits,
+    Supplied: supplied,
+    Matured: matured,
   };
 }
 
@@ -508,8 +684,8 @@ function readValue(record, ...keys) {
 
   for (const key of keys) {
     const value =
-      raw[key] ??
       record?.[key] ??
+      raw[key] ??
       normalizedRaw[normalizeKey(key)];
 
     if (value !== undefined && value !== null && String(value).trim() !== "") {
@@ -521,6 +697,11 @@ function readValue(record, ...keys) {
 
 function normalizeKey(key) {
   return String(key || "").trim().toUpperCase();
+}
+
+function formatLiveStationNameAndCode(code) {
+  const name = getStationName(code);
+  return name && name !== code ? `${name} (${code})` : code;
 }
 
 function dash(value) {
@@ -547,6 +728,7 @@ function toSortedOptions(values) {
 function buildFilterName(filters) {
   const parts = [
     filters.search,
+    filters.status && filters.status !== "all" ? `Status:${filters.status}` : "",
     ...filters.divisions,
     ...filters.stationsFrom,
     ...filters.commodities,

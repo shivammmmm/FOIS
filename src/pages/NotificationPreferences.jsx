@@ -1,15 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bell, Eye, Plus, Save, Trash2, X, AlertTriangle } from "lucide-react";
+import { Bell, Eye, Plus, Save, Trash2, X } from "lucide-react";
 import { base44 } from "@/api/base44Client";
 import MultiSelectFilter from "@/components/MultiSelectFilter";
 import { useAuth } from "@/lib/AuthContext";
 import { buildFilterHierarchyOptions } from "@/utils/filterHierarchy";
 
-const STAGE_OPTIONS = [
-  ["notify_new_demand", "📝 New Rack Indent"],
-  ["notify_supplied", "🚚 Rack Supplied"],
-  ["notify_dispatched", "🚆 Rack Dispatched"],
+const DIRECTION_OPTIONS = [
+  ["inward_enabled", "⬇️ Inward"],
+  ["outward_enabled", "⬆️ Outward"],
 ];
+
+function directionSummary(preset) {
+  const inward = preset.inward_enabled !== false;
+  const outward = preset.outward_enabled !== false;
+  if (inward && outward) return "● Inward & Outward";
+  if (inward) return "● Inward only";
+  if (outward) return "● Outward only";
+  return "● No direction selected";
+}
 
 const DEFAULTS = {
   preset_name: "",
@@ -17,9 +25,6 @@ const DEFAULTS = {
   email_enabled: true,
   inward_enabled: true,
   outward_enabled: true,
-  notify_new_demand: true,
-  notify_supplied: true,
-  notify_dispatched: true,
   stations: [],
   zones: [],
   divisions: [],
@@ -38,6 +43,7 @@ export default function NotificationPreferences() {
   const [prefs, setPrefs] = useState(DEFAULTS);
   const [saving, setSaving] = useState(false);
   const [hierarchy, setHierarchy] = useState(null);
+  const [cnsrCnsgOptions, setCnsrCnsgOptions] = useState({ consignor: [], consignee: [] });
   const [loadErrors, setLoadErrors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [inspectPreset, setInspectPreset] = useState(null);
@@ -50,15 +56,25 @@ export default function NotificationPreferences() {
     if (!user?.id) return;
     setLoading(true);
     try {
-      const [prefsResult, hierarchyResult] = await Promise.allSettled([
+      const [prefsResult, hierarchyResult, reportOptionsResult] = await Promise.allSettled([
         base44.entities.UserNotificationPreference.filter({ user_id: user.id }),
         base44.filterHierarchy(),
+        // filterHierarchy() has no CNSR/CNSG lists (they aren't master data);
+        // fois-reports carries them as options covering all movements
+        // regardless of direction, which is the right scope for a rule that
+        // can apply to Inward, Outward, or both.
+        base44.foisReports.page({ page: 1, limit: 1 }),
       ]);
 
       const errors = [];
       if (hierarchyResult.status === "rejected") errors.push("Master/report data load failed");
       setLoadErrors(errors);
       setHierarchy(hierarchyResult.status === "fulfilled" ? hierarchyResult.value : {});
+      const reportOptions = reportOptionsResult.status === "fulfilled" ? reportOptionsResult.value?.options || {} : {};
+      setCnsrCnsgOptions({
+        consignor: reportOptions.cnsr || [],
+        consignee: reportOptions.cnsg || [],
+      });
 
       const rows = prefsResult.status === "fulfilled" ? prefsResult.value : [];
       setAllPresets(rows);
@@ -70,15 +86,18 @@ export default function NotificationPreferences() {
   };
 
   const options = useMemo(
-    () =>
-      buildFilterHierarchyOptions(hierarchy || {}, {
+    () => ({
+      ...buildFilterHierarchyOptions(hierarchy || {}, {
         zone: prefs.zones,
         division: prefs.divisions,
         state: prefs.states,
         district: prefs.districts,
         commodity: prefs.commodities,
       }),
-    [hierarchy, prefs.zones, prefs.divisions, prefs.states, prefs.districts, prefs.commodities]
+      consignor: cnsrCnsgOptions.consignor,
+      consignee: cnsrCnsgOptions.consignee,
+    }),
+    [hierarchy, prefs.zones, prefs.divisions, prefs.states, prefs.districts, prefs.commodities, cnsrCnsgOptions]
   );
 
   const generateNextPresetCode = () => {
@@ -100,11 +119,8 @@ export default function NotificationPreferences() {
       preset_name: prefs.preset_name || `Alert Rule (${code})`,
       in_app_enabled: true,
       email_enabled: true,
-      inward_enabled: true,
-      outward_enabled: true,
-      notify_new_demand: prefs.notify_new_demand !== false,
-      notify_supplied: prefs.notify_supplied !== false,
-      notify_dispatched: prefs.notify_dispatched !== false,
+      inward_enabled: prefs.inward_enabled !== false,
+      outward_enabled: prefs.outward_enabled !== false,
       stations: prefs.stations || [],
       zones: prefs.zones || [],
       divisions: prefs.divisions || [],
@@ -146,9 +162,8 @@ export default function NotificationPreferences() {
       rakeCmdts: preset.rakeCmdts || preset.data?.rakeCmdts || [],
       cnsr: preset.cnsr || preset.data?.cnsr || [],
       cnsg: preset.cnsg || preset.data?.cnsg || [],
-      notify_new_demand: preset.notify_new_demand !== false,
-      notify_supplied: preset.notify_supplied !== false,
-      notify_dispatched: preset.notify_dispatched !== false,
+      inward_enabled: preset.inward_enabled !== false,
+      outward_enabled: preset.outward_enabled !== false,
     });
   };
 
@@ -268,13 +283,15 @@ export default function NotificationPreferences() {
                     </div>
                     <div className="font-semibold text-sm text-foreground">{name}</div>
                     <div className="text-xs text-muted-foreground line-clamp-2">
-                      Zones: {(preset.zones || preset.data?.zones || []).join(", ") || "All"} · 
-                      Stations: {(preset.stations || preset.data?.stations || []).join(", ") || "All"} · 
+                      Zones: {(preset.zones || preset.data?.zones || []).join(", ") || "All"} ·
+                      Stations: {(preset.stations || preset.data?.stations || []).join(", ") || "All"} ·
                       CMDT: {(preset.commodities || preset.data?.commodities || []).join(", ") || "All"}
                     </div>
                   </div>
                   <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
-                    <span className="text-emerald-500 font-semibold">● In-App & Email ON</span>
+                    <span className="text-emerald-500 font-semibold">
+                      {directionSummary(preset)}
+                    </span>
                     <span>Click code to inspect</span>
                   </div>
                 </div>
@@ -316,11 +333,11 @@ export default function NotificationPreferences() {
 
         <div className="space-y-3 pt-2">
           <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            Notification Trigger Stages
+            Notification Direction
           </h3>
-          <div className="grid gap-3 md:grid-cols-3">
-            {STAGE_OPTIONS.map(([key, label]) => (
-              <ToggleRow key={key} label={label} checked={!!prefs[key]} onChange={(value) => setPref(key, value)} />
+          <div className="grid gap-3 md:grid-cols-2">
+            {DIRECTION_OPTIONS.map(([key, label]) => (
+              <ToggleRow key={key} label={label} checked={prefs[key] !== false} onChange={(value) => setPref(key, value)} />
             ))}
           </div>
         </div>
@@ -416,6 +433,7 @@ function PresetInspectionModal({ preset, onClose }) {
     ["Rule Alias Name", name],
     ["In-App Channel", "Active (Enabled)"],
     ["Email Channel", "Active (Enabled)"],
+    ["Direction", directionSummary(preset).replace(/^●\s*/, "")],
     ["Zones", (preset.zones || preset.data?.zones || []).join(", ") || "All Zones"],
     ["Divisions", (preset.divisions || preset.data?.divisions || []).join(", ") || "All Divisions"],
     ["Stations", (preset.stations || preset.data?.stations || []).join(", ") || "All Stations"],

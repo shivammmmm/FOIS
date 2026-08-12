@@ -11,10 +11,14 @@ export default defineConfig({
     dedupe: ["react", "react-dom"],
   },
   server: {
+    port: 5173,
+    strictPort: true,
     proxy: {
       "/api": {
         target: "http://127.0.0.1:3000",
         changeOrigin: true,
+        timeout: 300000,
+        proxyTimeout: 300000,
       },
     },
   },

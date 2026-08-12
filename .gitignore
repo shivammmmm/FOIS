@@ -34,3 +34,6 @@ dist/
 dist.zip
 node_modules/
 .env
+
+# Working/scratch files (backups, one-off scripts) — not for version control
+scratch/

@@ -1,7 +1,5 @@
-import { Pool } from "pg";
+import { pool } from "./db/pool.js";
 import { cachedJson } from "./cache.js";
-
-const pool = new Pool({ connectionString: process.env.DATABASE_URL || "postgresql://fois_user:fois_password@localhost:5432/fois_db" });
 
 const fieldSql = {
   // Uploaded files carry no real zone column; zone is derived live from the
@@ -18,8 +16,57 @@ const fieldSql = {
   commodity: "COALESCE(commodity_name, commodity_code, data->>'commodity_name', data->>'commodity_code', data->>'commodity')",
   rake: "COALESCE(rake_commodity_code, data->>'rake_commodity_code', data->>'rake_cmdt')",
   company: "COALESCE(data->>'company', data->>'consignor', data->>'consignee')",
+  cnsr: "COALESCE(data->>'company', data->>'company_code', data->>'cnsr', data->>'consignor')",
+  cnsg: "COALESCE(data->>'cnsg', data->>'consignee')",
   status: "data->>'status'",
 };
+
+const suppliedSqlCond = `(
+  (NULLIF(data->>'supplied_time', '') IS NOT NULL AND data->>'supplied_time' <> '-')
+  OR (NULLIF(data->'raw_data'->>'SUPPLIED TIME', '') IS NOT NULL AND data->'raw_data'->>'SUPPLIED TIME' <> '-')
+  OR (NULLIF(data->'raw_data'->>'supplied_time', '') IS NOT NULL AND data->'raw_data'->>'supplied_time' <> '-')
+  OR (NULLIF(data->'raw_data'->>'SUPPLIED DATE', '') IS NOT NULL AND data->'raw_data'->>'SUPPLIED DATE' <> '-')
+  OR (data->>'supplied_units' ~ '^[0-9]+(\\.[0-9]+)?$' AND (data->>'supplied_units')::numeric > 0)
+  OR (data->'raw_data'->>'SUPPLIED UNTS' ~ '^[0-9]+(\\.[0-9]+)?$' AND (data->'raw_data'->>'SUPPLIED UNTS')::numeric > 0)
+  OR (data->'raw_data'->>'supplied_units' ~ '^[0-9]+(\\.[0-9]+)?$' AND (data->'raw_data'->>'supplied_units')::numeric > 0)
+)`;
+
+const maturedSqlCond = `(
+  (NULLIF(data->>'met_with_date', '') IS NOT NULL AND data->>'met_with_date' <> '-')
+  OR (NULLIF(data->'raw_data'->>'MET WITH DATE', '') IS NOT NULL AND data->'raw_data'->>'MET WITH DATE' <> '-')
+  OR (NULLIF(data->'raw_data'->>'METWITH DATE', '') IS NOT NULL AND data->'raw_data'->>'METWITH DATE' <> '-')
+)`;
+
+function applyStatusFilter(where, inputStatus) {
+  if (!inputStatus || inputStatus === "all") return;
+  const statuses = Array.isArray(inputStatus)
+    ? inputStatus.map((s) => String(s).toLowerCase().trim()).filter((b) => b && b !== "all")
+    : [String(inputStatus).toLowerCase().trim()];
+
+  if (!statuses.length) return;
+
+  const conds = [];
+  for (const s of statuses) {
+    if (s === "supplied") {
+      conds.push(suppliedSqlCond);
+    } else if (s === "matured") {
+      conds.push(maturedSqlCond);
+    } else if (s === "both") {
+      conds.push(`(${suppliedSqlCond} AND ${maturedSqlCond})`);
+    } else if (s === "either") {
+      conds.push(`(${suppliedSqlCond} OR ${maturedSqlCond})`);
+    } else if (s === "pending") {
+      conds.push(`(NOT ${suppliedSqlCond} AND NOT ${maturedSqlCond})`);
+    } else {
+      conds.push(`data->>'status' ILIKE '${s.replace(/'/g, "''")}'`);
+    }
+  }
+  if (conds.length === 1) {
+    where.push(conds[0]);
+  } else if (conds.length > 1) {
+    where.push(`(${conds.join(" OR ")})`);
+  }
+}
 
 function queryContext(input = {}) {
   const direction = input.direction === "Outward" ? "Outward" : "Inward";
@@ -29,16 +76,17 @@ function queryContext(input = {}) {
     district: fieldSql[inward ? "districtInward" : "districtOutward"],
     station: fieldSql[inward ? "stationInward" : "stationOutward"],
     zone: fieldSql.zone, division: fieldSql.division, commodity: fieldSql.commodity,
-    rake: fieldSql.rake, company: fieldSql.company,
+    rake: fieldSql.rake, company: fieldSql.company, cnsr: fieldSql.cnsr, cnsg: fieldSql.cnsg,
   };
   const params = [direction];
-  const where = ["data->>'movement_type' = $1"];
+  const where = ["data->>'movement_type' = $1", "active_status = 'ACTIVE'"];
   for (const key of Object.keys(expressions)) {
     const values = Array.isArray(input[key]) ? input[key].filter(Boolean) : [];
     if (!values.length) continue;
     params.push(values);
     where.push(`${expressions[key]} = ANY($${params.length}::text[])`);
   }
+  applyStatusFilter(where, input.status);
   return { direction, inward, expressions, params, where: where.join(" AND ") };
 }
 
@@ -97,7 +145,7 @@ export async function pagedMovements(input) {
   const search = String(input.search || "").trim();
   if (search) {
     params.push(`%${search}%`);
-    where += ` AND (data->>'odr_number' ILIKE $${params.length} OR data->>'company' ILIKE $${params.length} OR station_from ILIKE $${params.length} OR station_to ILIKE $${params.length})`;
+    where += ` AND (data->>'odr_number' ILIKE $${params.length} OR data->>'company' ILIKE $${params.length} OR station_from ILIKE $${params.length} OR station_to ILIKE $${params.length} OR data->>'unique_rake_code' ILIKE $${params.length} OR business_key ILIKE $${params.length})`;
   }
   const count = await pool.query(`SELECT COUNT(*)::int AS total FROM freight_movements WHERE ${where}`, params);
   params.push(limit, (page - 1) * limit);
@@ -120,15 +168,29 @@ export async function pagedMovements(input) {
     params
   );
   return {
-    items: rows.rows.map((row) => ({ ...(row.data || {}), ...row, data: undefined })),
+    items: rows.rows.map((row) => ({ ...row, ...(row.data || {}), data: undefined })),
     total: count.rows[0].total, page, limit, totalPages: Math.max(1, Math.ceil(count.rows[0].total / limit)),
   };
 }
 
+// zone is looked up via a JOIN (see REPORT_ZONE_JOIN) rather than a
+// correlated subquery — the latter forces Postgres to re-scan
+// division_master once per freight_movements row (tens of thousands of
+// scans instead of one hash join), which was the single largest cost in
+// this query.
+const REPORT_ZONE_JOIN =
+  "LEFT JOIN division_master dm_zone ON dm_zone.code = COALESCE(data->>'division', data->'raw_data'->>'DVSN')";
+
 const reportExpressions = {
+  zone: "dm_zone.parent_code",
   division: "COALESCE(data->>'division', data->'raw_data'->>'DVSN')",
+  state: "COALESCE(from_state, data->>'from_state')",
+  district: "COALESCE(from_district, data->>'from_district')",
   stationFrom: "COALESCE(station_from, data->>'station_from', data->'raw_data'->>'STTN FROM')",
   commodity: "COALESCE(commodity_code, data->>'commodity_code', data->>'commodity', data->'raw_data'->>'CMDT')",
+  rake: "COALESCE(rake_commodity_code, data->>'rake_commodity_code', data->>'rake_cmdt')",
+  cnsr: "COALESCE(data->>'company', data->>'company_code', data->>'cnsr')",
+  cnsg: "COALESCE(data->>'cnsg', data->>'consignee')",
   destination: "COALESCE(station_to, data->>'station_to', data->'raw_data'->>'DSTN')",
 };
 
@@ -143,11 +205,21 @@ export async function pagedFoisReports(input = {}) {
   const page = Math.max(Number(input.page) || 1, 1);
   const limit = Math.min(Math.max(Number(input.limit) || 25, 1), 100);
   const params = [];
-  const where = [];
+  const where = [
+    "active_status = 'ACTIVE'",
+    "(data->>'odr_number' IS NULL OR data->>'odr_number' NOT ILIKE '%TOTAL%') AND (data->>'division' IS NULL OR data->>'division' !~ '^[0-9]+$') AND (station_from IS NULL OR station_from !~ '^[0-9]+(\\.[0-9]+)?$') AND (data->>'departure_date' IS NULL OR data->>'departure_date' NOT LIKE '%1984%')"
+  ];
+  addArrayFilter(where, params, reportExpressions.zone, input.zone);
   addArrayFilter(where, params, reportExpressions.division, input.division);
+  addArrayFilter(where, params, reportExpressions.state, input.state);
+  addArrayFilter(where, params, reportExpressions.district, input.district);
   addArrayFilter(where, params, reportExpressions.stationFrom, input.stationFrom);
   addArrayFilter(where, params, reportExpressions.commodity, input.commodity);
+  addArrayFilter(where, params, reportExpressions.rake, input.rake);
+  addArrayFilter(where, params, reportExpressions.cnsr, input.cnsr);
+  addArrayFilter(where, params, reportExpressions.cnsg, input.cnsg);
   addArrayFilter(where, params, reportExpressions.destination, input.destination);
+  applyStatusFilter(where, input.status);
 
   const search = String(input.search || "").trim();
   if (search) {
@@ -158,6 +230,7 @@ export async function pagedFoisReports(input = {}) {
       OR data->>'company' ILIKE ${token} OR data->>'cnsr' ILIKE ${token} OR data->>'cnsg' ILIKE ${token}
       OR ${reportExpressions.division} ILIKE ${token} OR ${reportExpressions.stationFrom} ILIKE ${token}
       OR ${reportExpressions.commodity} ILIKE ${token} OR ${reportExpressions.destination} ILIKE ${token}
+      OR data->>'unique_rake_code' ILIKE ${token} OR business_key ILIKE ${token}
     )`);
   }
   if (input.unmappedOnly) {
@@ -171,11 +244,15 @@ export async function pagedFoisReports(input = {}) {
     )`);
   }
   const whereSql = where.length ? ` WHERE ${where.join(" AND ")}` : "";
-  const metadataKey = `movement:reports:metadata:v2:${JSON.stringify({ search, division: input.division, stationFrom: input.stationFrom, commodity: input.commodity, destination: input.destination, unmappedOnly: input.unmappedOnly })}`;
+  const metadataKey = `movement:reports:metadata:v6:${JSON.stringify({
+    search, zone: input.zone, division: input.division, state: input.state, district: input.district,
+    stationFrom: input.stationFrom, commodity: input.commodity, rake: input.rake, cnsr: input.cnsr,
+    cnsg: input.cnsg, destination: input.destination, unmappedOnly: input.unmappedOnly, status: input.status,
+  })}`;
   const metadata = await cachedJson(metadataKey, 120, async () => {
-    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM freight_movements${whereSql}`, params);
-    const facets = await Promise.all(Object.values(reportExpressions).map((expression) =>
-      pool.query(`SELECT DISTINCT ${expression} AS value FROM freight_movements WHERE ${expression} IS NOT NULL AND ${expression} <> '' ORDER BY value LIMIT 5000`)
+    const count = await pool.query(`SELECT COUNT(*)::int AS total FROM freight_movements ${REPORT_ZONE_JOIN}${whereSql}`, params);
+    const facets = await Promise.all(Object.entries(reportExpressions).map(([key, expression]) =>
+      pool.query(`SELECT DISTINCT ${expression} AS value FROM freight_movements ${key === "zone" ? REPORT_ZONE_JOIN : ""} WHERE active_status = 'ACTIVE' AND ${expression} IS NOT NULL AND ${expression} <> '' ORDER BY value LIMIT 5000`)
     ));
     const keys = Object.keys(reportExpressions);
     return {
@@ -183,7 +260,7 @@ export async function pagedFoisReports(input = {}) {
       options: Object.fromEntries(keys.map((key, index) => [key, facets[index].rows.map((row) => row.value)])),
     };
   });
-  const cacheKey = `movement:reports:page:v2:${JSON.stringify(input)}`;
+  const cacheKey = `movement:reports:page:v5:${JSON.stringify(input)}`;
   return cachedJson(cacheKey, 60, async () => {
     const rowParams = [...params, limit, (page - 1) * limit];
     const rows = await pool.query(
@@ -205,12 +282,13 @@ export async function pagedFoisReports(input = {}) {
        FROM freight_movements fm
        LEFT JOIN station_master sm_from ON sm_from.station_code = fm.station_from AND sm_from.is_active IS DISTINCT FROM FALSE
        LEFT JOIN station_master sm_to ON sm_to.station_code = fm.station_to AND sm_to.is_active IS DISTINCT FROM FALSE
+       ${REPORT_ZONE_JOIN}
        ${whereSql}
        ORDER BY fm.created_date DESC, fm.id DESC LIMIT $${rowParams.length - 1} OFFSET $${rowParams.length}`,
       rowParams
     );
     return {
-      items: rows.rows.map((row) => ({ ...(row.data || {}), ...row, upload_date: row.report_upload_date, data: undefined, report_upload_date: undefined })),
+      items: rows.rows.map((row) => ({ ...row, ...(row.data || {}), upload_date: row.report_upload_date, data: undefined, report_upload_date: undefined })),
       total: metadata.total, page, limit,
       totalPages: Math.max(1, Math.ceil(metadata.total / limit)),
       options: metadata.options,

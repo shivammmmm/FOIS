@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { base44 } from '@/api/base44Client';
 import { useAuth } from '@/lib/AuthContext';
+import GoogleSignInButton from '@/components/GoogleSignInButton';
 
 export default function Login() {
   const [identifier, setIdentifier] = useState('');
@@ -16,22 +17,31 @@ export default function Login() {
   const navigate = useNavigate();
   const { checkUserAuth } = useAuth();
 
+  const goToLandingForRole = async () => {
+    const currentUser = await checkUserAuth();
+    const nextPath = currentUser?.role === 'super_admin' || currentUser?.role === 'admin'
+      ? '/admin'
+      : '/dashboard';
+    navigate(nextPath, { replace: true });
+  };
+
   const onSubmit = async (e) => {
     e.preventDefault();
     setError(null);
     setLoading(true);
     try {
       await base44.auth.login({ identifier, password });
-      const currentUser = await checkUserAuth();
-      const nextPath = currentUser?.role === 'super_admin' || currentUser?.role === 'admin'
-        ? '/admin'
-        : '/dashboard';
-      navigate(nextPath, { replace: true });
+      await goToLandingForRole();
     } catch (err) {
       setError(err?.message || 'Login failed');
     } finally {
       setLoading(false);
     }
+  };
+
+  const onGoogleSuccess = async () => {
+    setError(null);
+    await goToLandingForRole();
   };
 
   const requestReset = async () => {
@@ -161,6 +171,14 @@ export default function Login() {
           >
             {loading ? 'Signing in...' : 'Sign in'}
           </button>
+
+          <div className="flex items-center gap-3 py-1">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-xs uppercase tracking-wide text-muted-foreground">or</span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
+
+          <GoogleSignInButton onSuccess={onGoogleSuccess} onError={setError} />
 
           <div className="text-sm text-muted-foreground flex items-center justify-between">
             <span>New here?</span>

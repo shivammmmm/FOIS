@@ -82,15 +82,15 @@ export const base44 = {
       }
     },
 
-    signup: async ({ username, email, password } = /** @type {any} */ ({})) => {
-      if (!username || !email || !password) {
-        throw new Error("username, email, password are required");
+    signup: async ({ firstName, lastName, category, email, mobile, password } = /** @type {any} */ ({})) => {
+      if (!firstName || !lastName || !category || !password || (!email && !mobile)) {
+        throw new Error("First name, last name, category, password and either an email or mobile number are required");
       }
 
       const response = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, email, password }),
+        body: JSON.stringify({ firstName, lastName, category, email, mobile, password }),
       });
 
       if (!response.ok) {
@@ -99,6 +99,24 @@ export const base44 = {
       }
 
       return response.json();
+    },
+    /** @param {string} credential */
+    google: async (credential) => {
+      if (!credential) throw new Error("Missing Google credential");
+
+      const response = await fetch("/api/auth/google", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credential }),
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Google sign-in failed");
+
+      const token = data?.token;
+      if (!token) throw new Error("Google sign-in failed: token missing");
+      base44.auth.setToken(token);
+      return data;
     },
 
     isAuthenticated: () => Promise.resolve(true),

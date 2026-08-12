@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { base44 } from "@/api/base44Client";
 import StatusBadge from "@/components/StatusBadge";
 import {
@@ -66,6 +67,8 @@ export default function UploadHistory() {
     let totalInserted = 0;
     let totalUpdated = 0;
     let totalSkipped = 0;
+    let totalSuppliedUpdates = 0;
+    let totalMaturedUpdates = 0;
     let totalRowsProcessed = 0;
     let todayCount = 0;
     let totalTimeMs = 0;
@@ -74,15 +77,19 @@ export default function UploadHistory() {
       const uDate = (u.uploaded_at || u.upload_time || "").split("T")[0];
       if (uDate === todayStr) todayCount++;
 
-      const ins = Number(u.insertedRecords ?? u.record_count ?? 0);
+      const ins = Number(u.insertedRecords ?? u.new_indents_added ?? u.record_count ?? 0);
       const upd = Number(u.updatedRecords ?? u.updated_count ?? 0);
       const skp = Number(u.skippedRecords ?? u.skipped_count ?? 0);
+      const sup = Number(u.supplied_status_updates ?? 0);
+      const mat = Number(u.matured_status_updates ?? 0);
       const parsed = Number(u.records_parsed ?? u.record_count ?? 0);
       const duration = Number(u.processing_time_ms ?? u.duration_ms ?? 0);
 
       totalInserted += ins;
       totalUpdated += upd;
       totalSkipped += skp;
+      totalSuppliedUpdates += sup;
+      totalMaturedUpdates += mat;
       totalRowsProcessed += parsed;
       totalTimeMs += duration;
     }
@@ -99,6 +106,8 @@ export default function UploadHistory() {
       totalInserted,
       totalUpdated,
       totalSkipped,
+      totalSuppliedUpdates,
+      totalMaturedUpdates,
       avgSpeed,
     };
   }, [uploads]);
@@ -272,7 +281,9 @@ export default function UploadHistory() {
                   { label: "Parsed", align: "text-center" },
                   { label: "Valid", align: "text-center" },
                   { label: "Duplicates", align: "text-center" },
-                  { label: "Real Added", align: "text-center" },
+                  { label: "New Added", align: "text-center" },
+                  { label: "Supplied", align: "text-center" },
+                  { label: "Matured", align: "text-center" },
                   { label: "Status", align: "text-center" },
                 ].map(({ label, align }) => (
                   <th
@@ -291,7 +302,7 @@ export default function UploadHistory() {
               {loading ? (
                 [...Array(5)].map((_, rowIndex) => (
                   <tr key={rowIndex} className="border-b border-border/50">
-                    {[...Array(11)].map((_, cellIndex) => (
+                    {[...Array(13)].map((_, cellIndex) => (
                       <td key={cellIndex} className="px-3 py-3">
                         <div className="h-4 bg-muted rounded animate-pulse" />
                       </td>
@@ -304,7 +315,7 @@ export default function UploadHistory() {
               ) : filteredUploads.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={12}
+                    colSpan={14}
                     className="px-4 py-12 text-center text-sm text-muted-foreground"
                   >
                     No upload history logs found.
@@ -360,7 +371,25 @@ export default function UploadHistory() {
                       )}
                     </td>
                     <td className="px-3 py-2.5 text-center font-extrabold text-emerald-400 whitespace-nowrap">
-                      +{formatCount(upload.real_added ?? Math.max(0, (upload.records_valid ?? upload.record_count ?? 0) - (upload.duplicates_found ?? 0)))}
+                      +{formatCount(upload.new_indents_added ?? upload.real_added ?? Math.max(0, (upload.records_valid ?? upload.record_count ?? 0) - (upload.duplicates_found ?? 0)))}
+                    </td>
+                    <td className="px-3 py-2.5 text-center font-bold whitespace-nowrap">
+                      {(upload.supplied_status_updates || 0) > 0 ? (
+                        <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-blue-500/15 text-blue-400 border border-blue-500/30">
+                          +{formatCount(upload.supplied_status_updates)}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-center font-bold whitespace-nowrap">
+                      {(upload.matured_status_updates || 0) > 0 ? (
+                        <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-purple-500/15 text-purple-400 border border-purple-500/30">
+                          +{formatCount(upload.matured_status_updates)}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-center whitespace-nowrap">
                       <StatusBadge status={upload.status} />
@@ -428,11 +457,13 @@ function UploadDetailsModal({ upload, onClose }) {
     ["Uploaded By", upload.uploaded_by || "-"],
     ["Total Parsed Rows", formatCount(upload.records_parsed || upload.records_valid)],
     ["Valid Rows", formatCount(upload.records_valid ?? upload.record_count ?? 0)],
+    ["New Demands Added", formatCount(upload.new_indents_added ?? upload.insertedRecords ?? upload.record_count ?? 0)],
+    ["Supplied Status Updates", formatCount(upload.supplied_status_updates ?? 0)],
+    ["Matured Status Updates", formatCount(upload.matured_status_updates ?? 0)],
+    ["Total Updated", formatCount(upload.updatedRecords ?? upload.updated_count ?? 0)],
+    ["Skipped (Unchanged)", formatCount(upload.skippedRecords ?? upload.skipped_count ?? 0)],
     ["Duplicates DB Skipped", formatCount(upload.duplicates_found ?? 0)],
     ["Real Value Added (Net New)", formatCount(upload.real_added ?? Math.max(0, (upload.records_valid ?? 0) - (upload.duplicates_found ?? 0)))],
-    ["Inserted (New)", formatCount(upload.insertedRecords ?? upload.record_count ?? 0)],
-    ["Updated", formatCount(upload.updatedRecords ?? upload.updated_count ?? 0)],
-    ["Skipped (Unchanged)", formatCount(upload.skippedRecords ?? upload.skipped_count ?? 0)],
     ["Duplicates Inside File", formatCount(upload.duplicate_rows_in_file ?? 0)],
     ["Notifications Sent", formatCount(upload.notifications_count ?? 0)],
     ["Processing Time", upload.processing_time_ms ? `${upload.processing_time_ms} ms` : "-"],
@@ -445,8 +476,8 @@ function UploadDetailsModal({ upload, onClose }) {
     window.open(`/api/admin/upload-history/${upload.id || upload.batch_id}/warnings-report`, "_blank");
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs px-4 py-6 overflow-y-auto">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 overflow-y-auto">
       <div className="w-full max-w-3xl rounded-2xl border border-border bg-card shadow-2xl my-auto animate-scale-in">
         <div className="flex items-center justify-between border-b border-border px-5 py-4">
           <div className="flex items-center gap-2.5">
@@ -526,13 +557,14 @@ function UploadDetailsModal({ upload, onClose }) {
           ) : null}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
 function DeleteConfirmModal({ upload, deleting, onCancel, onDelete }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs px-4">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 overflow-y-auto">
       <div className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-2xl space-y-4 animate-scale-in">
         <div className="flex items-center gap-3">
           <div className="p-2.5 rounded-full bg-red-500/20 text-red-400 border border-red-500/30">
@@ -560,13 +592,14 @@ function DeleteConfirmModal({ upload, deleting, onCancel, onDelete }) {
           <button
             onClick={onDelete}
             disabled={deleting}
-            className="inline-flex items-center gap-2 rounded-xl bg-red-500 px-4 py-2 text-xs font-semibold text-white hover:bg-red-600 disabled:opacity-50 cursor-pointer transition-colors shadow-sm"
+            className="inline-flex items-center gap-2 rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-50 cursor-pointer transition-colors shadow-sm"
           >
             {deleting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
             Confirm Delete
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

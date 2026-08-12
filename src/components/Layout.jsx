@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import GlobalSearch from "./GlobalSearch";
 import NotificationBell from "./NotificationBell";
+import NotificationAlarm from "./NotificationAlarm";
 import { useAuth } from "@/lib/AuthContext";
 import { loadMasterHierarchy } from "@/utils/masterHierarchy";
 
@@ -61,7 +62,7 @@ const adminNavItems = [
   { path: "/admin/inward", label: "Inward Monitor", icon: ArrowDownToLine },
   { path: "/admin/outward", label: "Outward Monitor", icon: ArrowUpFromLine },
   { path: "/admin/users", label: "User Management", icon: Users },
-  { path: "/admin/notifications", label: "Notifications", icon: Bell },
+  { path: "/notification-preferences", label: "Notification Settings", icon: Bell },
   { path: "/admin/settings", label: "Settings", icon: Settings },
 ];
 
@@ -396,6 +397,8 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
+      <NotificationAlarm />
     </div>
   );
 }

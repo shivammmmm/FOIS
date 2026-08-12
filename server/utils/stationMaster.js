@@ -1,11 +1,4 @@
-import { Pool } from "pg";
-
-const DATABASE_URL =
-  process.env.DATABASE_URL ||
-  "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-
-// Lightweight DB access for master lookups & unmapped recording.
-const pool = new Pool({ connectionString: DATABASE_URL });
+import { pool } from "../db/pool.js";
 
 function normalizeCode(code) {
   return String(code || "").trim().toUpperCase();
@@ -120,27 +113,29 @@ export async function bulkLookupStationMasters(codes) {
     // Ignore Postgres failure when running in JSON DB mode
   }
 
-  // Fallback / complement with JSON storage (db.json)
-  try {
-    const { readDb } = await import("../db.js");
-    const db = await readDb();
-    const stations = Array.isArray(db.station_master) ? db.station_master : [];
-    for (const row of stations) {
-      const code = normalizeCode(row.station_code || row.code);
-      if (unique.includes(code) && !map[code]) {
-        map[code] = {
-          station_code: code,
-          station_name: row.station_name || row.name || code,
-          district: row.district || null,
-          state: row.state || null,
-          division: row.division || null,
-          zone: row.zone || null,
-          is_active: row.is_active !== false,
-        };
+  // Fallback / complement with JSON storage (db.json) ONLY IF missing codes
+  if (Object.keys(map).length < unique.length) {
+    try {
+      const { readDb } = await import("../db.js");
+      const db = await readDb();
+      const stations = Array.isArray(db.station_master) ? db.station_master : [];
+      for (const row of stations) {
+        const code = normalizeCode(row.station_code || row.code);
+        if (unique.includes(code) && !map[code]) {
+          map[code] = {
+            station_code: code,
+            station_name: row.station_name || row.name || code,
+            district: row.district || null,
+            state: row.state || null,
+            division: row.division || null,
+            zone: row.zone || null,
+            is_active: row.is_active !== false,
+          };
+        }
       }
+    } catch (_err) {
+      // Ignore JSON fallback error if any
     }
-  } catch (_err) {
-    // Ignore JSON fallback error if any
   }
 
   return map;

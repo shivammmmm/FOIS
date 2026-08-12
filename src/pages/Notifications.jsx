@@ -58,6 +58,8 @@ const DEFAULT_FILTERS = {
   stations: [],
   commodities: [],
   rakeCmdts: [],
+  cnsr: [],
+  cnsg: [],
 };
 
 export default function Notifications() {
@@ -101,8 +103,13 @@ export default function Notifications() {
       stations: scoped.stations,
       commodities: scoped.commodities,
       rakeCmdts: scoped.rakeCmdts,
+      // filterHierarchy() has no CNSR/CNSG lists (they aren't master data),
+      // so options are drawn from whatever movements are already loaded on
+      // this page — the same source the "unmapped stations" callout uses.
+      cnsr: uniqueSorted(movements.map(getCnsrCode)),
+      cnsg: uniqueSorted(movements.map(getCnsgCode)),
     };
-  }, [scoped]);
+  }, [scoped, movements]);
 
   useEffect(() => {
     loadData();
@@ -227,7 +234,9 @@ export default function Notifications() {
         filters.districts.length > 0 ||
         filters.stations.length > 0 ||
         filters.commodities.length > 0 ||
-        filters.rakeCmdts.length > 0;
+        filters.rakeCmdts.length > 0 ||
+        filters.cnsr.length > 0 ||
+        filters.cnsg.length > 0;
 
       if (!needsMovementMatch) return true;
 
@@ -254,7 +263,9 @@ export default function Notifications() {
     filters.districts.length > 0 ||
     filters.stations.length > 0 ||
     filters.commodities.length > 0 ||
-    filters.rakeCmdts.length > 0;
+    filters.rakeCmdts.length > 0 ||
+    filters.cnsr.length > 0 ||
+    filters.cnsg.length > 0;
 
   function setFilter(name, value) {
     setFilters((prev) => ({ ...prev, [name]: value }));
@@ -276,6 +287,8 @@ export default function Notifications() {
       ),
       commodities: normalizeMultiValue(nextFilters.commodities ?? nextFilters.filterComm),
       rakeCmdts: normalizeMultiValue(nextFilters.rakeCmdts ?? nextFilters.filterRakeCmdt),
+      cnsr: normalizeMultiValue(nextFilters.cnsr),
+      cnsg: normalizeMultiValue(nextFilters.cnsg),
     });
   }
 
@@ -414,6 +427,20 @@ export default function Notifications() {
             onChange={(value) => setFilters((prev) => ({ ...prev, rakeCmdts: value }))}
             options={options.rakeCmdts}
             placeholder="All Rake CMDT"
+          />
+          <MultiSelectFilter
+            label="CNSR"
+            selected={filters.cnsr}
+            onChange={(value) => setFilter("cnsr", value)}
+            options={options.cnsr}
+            placeholder="All Consignors"
+          />
+          <MultiSelectFilter
+            label="CNSG"
+            selected={filters.cnsg}
+            onChange={(value) => setFilter("cnsg", value)}
+            options={options.cnsg}
+            placeholder="All Consignees"
           />
 
           {savedFilters.length > 0 && (
@@ -658,7 +685,9 @@ function movementMatchesFilters(movement, filters) {
     (filters.districts.length === 0 || filters.districts.some((district) => districts.has(district))) &&
     (filters.stations.length === 0 || filters.stations.some((station) => stationCodes.includes(station))) &&
     optionMatches(filters.commodities, getCommodityCode(movement)) &&
-    optionMatches(filters.rakeCmdts, getRakeCmdtCode(movement))
+    optionMatches(filters.rakeCmdts, getRakeCmdtCode(movement)) &&
+    optionMatches(filters.cnsr, getCnsrCode(movement)) &&
+    optionMatches(filters.cnsg, getCnsgCode(movement))
   );
 }
 
@@ -685,6 +714,8 @@ function savedFilterSignature(filterData) {
     stations: (filterData.stations || []).slice().sort(),
     commodities: (filterData.commodities || []).slice().sort(),
     rakeCmdts: (filterData.rakeCmdts || []).slice().sort(),
+    cnsr: (filterData.cnsr || []).slice().sort(),
+    cnsg: (filterData.cnsg || []).slice().sort(),
   };
   return JSON.stringify(obj);
 }
@@ -701,6 +732,8 @@ function normalizeNotificationFilters(source) {
     stations: Array.isArray(source.stations) ? source.stations : [],
     commodities: Array.isArray(source.commodities) ? source.commodities : [],
     rakeCmdts: Array.isArray(source.rakeCmdts) ? source.rakeCmdts : [],
+    cnsr: Array.isArray(source.cnsr) ? source.cnsr : [],
+    cnsg: Array.isArray(source.cnsg) ? source.cnsg : [],
   };
 }
 
@@ -711,9 +744,23 @@ function buildFilterName(filt) {
   if (filt.stations?.length) parts.push(`Stn:${filt.stations.join(",")}`);
   if (filt.commodities?.length) parts.push(`Cmdt:${filt.commodities.join(",")}`);
   if (filt.rakeCmdts?.length) parts.push(`Rake:${filt.rakeCmdts.join(",")}`);
+  if (filt.cnsr?.length) parts.push(`Cnsr:${filt.cnsr.join(",")}`);
+  if (filt.cnsg?.length) parts.push(`Cnsg:${filt.cnsg.join(",")}`);
   return parts.length ? parts.join(" | ") : "All Notifications";
 }
 
 function getCommodityCode(movement) {
   return movement.commodity_code || movement.commodity || movement.raw_data?.CMDT || "";
+}
+
+function getCnsrCode(movement) {
+  return movement.company || movement.company_code || movement.cnsr || movement.raw_data?.cnsr || movement.raw_data?.CNSR || "";
+}
+
+function getCnsgCode(movement) {
+  return movement.cnsg || movement.consignee || movement.raw_data?.cnsg || movement.raw_data?.CNSG || "";
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values.filter(Boolean))].sort();
 }

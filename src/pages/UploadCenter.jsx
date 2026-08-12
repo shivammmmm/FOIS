@@ -612,17 +612,18 @@ export default function UploadCenter() {
               </p>
 
               {uploadResult.success && (
-                <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
                   {[
                     ['Batch ID', uploadResult.batch_id || '—'],
-                    ['Zone & Version', `Version ${uploadResult.version_number || 1}`],
-                    ['Records Parsed', uploadResult.records_parsed?.toLocaleString('en-IN') || 0],
-                    ['Inserted (New)', `+${uploadResult.insertedRecords?.toLocaleString('en-IN') || 0}`],
-                    ['Real Added (Net New)', `+${(uploadResult.real_added ?? Math.max(0, (uploadResult.records_valid || 0) - (uploadResult.duplicates_found || 0)))?.toLocaleString('en-IN')}`],
-                    ['Updated', uploadResult.updatedRecords?.toLocaleString('en-IN') || 0],
-                    ['Skipped (Unchanged)', uploadResult.skippedRecords?.toLocaleString('en-IN') || 0],
+                    ['Zone & Version', `${uploadResult.zone || selectedZone} — Version ${uploadResult.version_number || 1}`],
+                    ['Records Parsed', (uploadResult.records_parsed ?? uploadResult.records_valid ?? 0)?.toLocaleString('en-IN')],
+                    ['New Records Added', `+${(uploadResult.real_added ?? uploadResult.new_indents_added ?? uploadResult.insertedRecords ?? 0)?.toLocaleString('en-IN')}`],
+                    ['Supplied Status Added', `+${(uploadResult.supplied_status_updates ?? 0)?.toLocaleString('en-IN')}`],
+                    ['Matured Status Added', `+${(uploadResult.matured_status_updates ?? 0)?.toLocaleString('en-IN')}`],
+                    ['Total Updated', (uploadResult.updatedRecords ?? 0)?.toLocaleString('en-IN')],
+                    ['Skipped (Unchanged)', (uploadResult.skippedRecords ?? uploadResult.duplicates_found ?? 0)?.toLocaleString('en-IN')],
                   ].map(([label, value]) => (
-                    <div key={label} className="bg-background/80 rounded-xl p-3 border border-border/60">
+                    <div key={label} className="bg-background/80 rounded-xl p-3 border border-border/60 shadow-2xs">
                       <div className="text-[11px] text-muted-foreground font-medium">{label}</div>
                       <div className="font-bold text-foreground mt-0.5 truncate text-xs">{value}</div>
                     </div>
@@ -709,22 +710,30 @@ export default function UploadCenter() {
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <div className="rounded-xl border border-border/80 bg-muted/30 p-3 text-center">
-                  <div className="text-[11px] text-muted-foreground font-medium">Total Parsed</div>
-                  <div className="text-lg font-bold text-foreground mt-1">{previewData.rows_parsed}</div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                <div className="rounded-xl border border-border/80 bg-muted/30 p-2.5 text-center">
+                  <div className="text-[10px] text-muted-foreground font-medium">Total Parsed</div>
+                  <div className="text-base font-bold text-foreground mt-0.5">{previewData.rows_parsed}</div>
                 </div>
-                <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3 text-center">
-                  <div className="text-[11px] text-emerald-400 font-semibold">Estimated New</div>
-                  <div className="text-lg font-bold text-emerald-400 mt-1">+{previewData.estimated_new}</div>
+                <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-2.5 text-center">
+                  <div className="text-[10px] text-emerald-400 font-semibold">Estimated New</div>
+                  <div className="text-base font-bold text-emerald-400 mt-0.5">+{previewData.estimated_new}</div>
                 </div>
-                <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-center">
-                  <div className="text-[11px] text-amber-400 font-semibold">Estimated Updated</div>
-                  <div className="text-lg font-bold text-amber-400 mt-1">{previewData.estimated_updated}</div>
+                <div className="rounded-xl border border-blue-500/40 bg-blue-500/10 p-2.5 text-center">
+                  <div className="text-[10px] text-blue-400 font-semibold">Estimated Supplied</div>
+                  <div className="text-base font-bold text-blue-400 mt-0.5">+{previewData.estimated_supplied_updates ?? 0}</div>
                 </div>
-                <div className="rounded-xl border border-blue-500/40 bg-blue-500/10 p-3 text-center">
-                  <div className="text-[11px] text-blue-400 font-semibold">Estimated Skipped</div>
-                  <div className="text-lg font-bold text-blue-400 mt-1">{previewData.estimated_skipped}</div>
+                <div className="rounded-xl border border-purple-500/40 bg-purple-500/10 p-2.5 text-center">
+                  <div className="text-[10px] text-purple-400 font-semibold">Estimated Matured</div>
+                  <div className="text-base font-bold text-purple-400 mt-0.5">+{previewData.estimated_matured_updates ?? 0}</div>
+                </div>
+                <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-2.5 text-center">
+                  <div className="text-[10px] text-amber-400 font-semibold">Estimated Updated</div>
+                  <div className="text-base font-bold text-amber-400 mt-0.5">{previewData.estimated_updated}</div>
+                </div>
+                <div className="rounded-xl border border-slate-500/40 bg-slate-500/10 p-2.5 text-center">
+                  <div className="text-[10px] text-slate-400 font-semibold">Estimated Skipped</div>
+                  <div className="text-base font-bold text-slate-400 mt-0.5">{previewData.estimated_skipped}</div>
                 </div>
               </div>
 
@@ -807,7 +816,9 @@ export default function UploadCenter() {
                   { label: 'Parsed', align: 'text-center' },
                   { label: 'Valid', align: 'text-center' },
                   { label: 'Duplicates', align: 'text-center' },
-                  { label: 'Real Added', align: 'text-center' },
+                  { label: 'New Added', align: 'text-center' },
+                  { label: 'Supplied', align: 'text-center' },
+                  { label: 'Matured', align: 'text-center' },
                   { label: 'Status', align: 'text-center' },
                 ].map(({ label, align }) => (
                   <th
@@ -826,7 +837,7 @@ export default function UploadCenter() {
               {loadingLogs ? (
                 [...Array(4)].map((_, i) => (
                   <tr key={i} className="border-b border-border/50">
-                    {[...Array(11)].map((_, j) => (
+                    {[...Array(13)].map((_, j) => (
                       <td key={j} className="px-3 py-3">
                         <div className="h-4 bg-muted rounded animate-pulse" />
                       </td>
@@ -838,7 +849,7 @@ export default function UploadCenter() {
                 ))
               ) : filteredLogs.length === 0 ? (
                 <tr>
-                  <td colSpan={12} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={14} className="px-4 py-12 text-center text-sm text-muted-foreground">
                     No upload history logs found matching query.
                   </td>
                 </tr>
@@ -891,7 +902,25 @@ export default function UploadCenter() {
                       )}
                     </td>
                     <td className="px-3 py-2.5 text-center font-extrabold text-emerald-500 whitespace-nowrap">
-                      +{log.real_added ?? Math.max(0, (log.records_valid || 0) - (log.duplicates_found || 0))}
+                      +{(log.new_indents_added ?? log.real_added ?? Math.max(0, (log.records_valid || 0) - (log.duplicates_found || 0)))}
+                    </td>
+                    <td className="px-3 py-2.5 text-center font-bold whitespace-nowrap">
+                      {(log.supplied_status_updates || 0) > 0 ? (
+                        <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-blue-500/15 text-blue-400 border border-blue-500/30">
+                          +{log.supplied_status_updates}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2.5 text-center font-bold whitespace-nowrap">
+                      {(log.matured_status_updates || 0) > 0 ? (
+                        <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-purple-500/15 text-purple-400 border border-purple-500/30">
+                          +{log.matured_status_updates}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">0</span>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-center whitespace-nowrap">
                       <StatusBadge status={log.status} />

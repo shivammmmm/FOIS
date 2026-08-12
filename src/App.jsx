@@ -178,6 +178,7 @@ const AuthenticatedApp = () => {
             <Route path="/admin/freight" element={<Navigate to="/admin/fois-reports" replace />} />
             <Route path="/admin/:operation" element={<OperationsKeepAlive />} />
             <Route path="/admin/notifications" element={<Notifications />} />
+            <Route path="/notification-preferences" element={<NotificationPreferences />} />
 
             <Route
               path="/admin/station-master"

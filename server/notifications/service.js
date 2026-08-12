@@ -68,6 +68,7 @@ export async function createNotification({
   const allowedMovementTypes = [
     'inward', 'outward', 'adminreview',
     'indentplaced', 'indentsupplied', 'rakedispatched',
+    'newrackindent', 'racksupplied', 'rackdispatched',
     'demandcreated', 'demandmatured', 'demandcompleted', 'partialsupplyupdated'
   ];
   if (!allowedMovementTypes.some(t => normalizedMovementType.includes(t))) {

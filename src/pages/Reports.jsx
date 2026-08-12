@@ -2,15 +2,17 @@ import { useState, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 import { FileText, Download, Loader2, Filter, Save } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { getCommodityName } from '@/utils/railwayDictionary';
+import { useMasterHierarchy } from '@/utils/masterHierarchy';
 import StatusBadge from '@/components/StatusBadge';
 import { useAuth } from '@/lib/AuthContext';
 import FreightDetailsModal from '@/components/FreightDetailsModal';
-import { useMasterHierarchy } from '@/utils/masterHierarchy';
+import { isSuppliedRecord, isMaturedRecord } from '@/utils/foisLifecycle';
 
 const REPORT_TYPES = [
   { id: 'inward', label: '🚆 Inward Report', desc: 'All inward freight movements' },
   { id: 'outward', label: '🚆 Outward Report', desc: 'All outward freight dispatches' },
+  { id: 'supplied', label: '🚚 Supplied Report', desc: 'Freight records with supply completed' },
+  { id: 'matured', label: '🎯 Matured Report', desc: 'Freight demands matured/matched' },
   { id: 'delayed', label: '⚠️ Delayed Movement', desc: 'Overdue and delayed trains' },
   { id: 'duplicate', label: '⚠️ Duplicate ODR', desc: 'Duplicate ODR records found' },
   { id: 'division', label: '📍 Division Report', desc: 'Movement summary by division' },
@@ -19,13 +21,14 @@ const REPORT_TYPES = [
 
 export default function Reports() {
   const { user } = useAuth();
-  const { getZoneForDivision, getDivisionName } = useMasterHierarchy();
+  const { getZoneForDivision, getDivisionName, getStationName, getCommodityName } = useMasterHierarchy();
   const [movements, setMovements] = useState([]);
   const [savedFilters, setSavedFilters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [reportType, setReportType] = useState('inward');
   const [filterDivision, setFilterDivision] = useState('All');
   const [filterCommodity, setFilterCommodity] = useState('All');
+  const [filterStatus, setFilterStatus] = useState('All');
   const [exporting, setExporting] = useState(false);
   const [selectedRecord, setSelectedRecord] = useState(null);
 
@@ -51,9 +54,19 @@ export default function Reports() {
     let data = [...movements];
     if (filterDivision !== 'All') data = data.filter(r => r.division === filterDivision);
     if (filterCommodity !== 'All') data = data.filter(r => r.commodity === filterCommodity);
+
+
+
+    if (filterStatus === 'supplied') data = data.filter(isSuppliedRecord);
+    else if (filterStatus === 'matured') data = data.filter(isMaturedRecord);
+    else if (filterStatus === 'both') data = data.filter(r => isSuppliedRecord(r) && isMaturedRecord(r));
+    else if (filterStatus === 'pending') data = data.filter(r => !isSuppliedRecord(r) && !isMaturedRecord(r));
+
     switch (reportType) {
       case 'inward': return data.filter(r => r.movement_type === 'Inward');
       case 'outward': return data.filter(r => r.movement_type === 'Outward');
+      case 'supplied': return data.filter(isSuppliedRecord);
+      case 'matured': return data.filter(isMaturedRecord);
       case 'delayed': return data.filter(r => r.status === 'Delayed');
       case 'duplicate': return data.filter(r => r.is_duplicate);
       case 'division': {
@@ -84,8 +97,8 @@ export default function Reports() {
         'ODR Number': r.odr_number || '',
         'Zone': getZoneForDivision(r.division) || '',
         'Division': r.division ? getDivisionName(r.division) : '',
-        'From Station': r.station_from || '',
-        'To Station': r.station_to || '',
+        'From Station': r.station_from ? getStationName(r.station_from) : '',
+        'To Station': r.station_to ? getStationName(r.station_to) : '',
         'Commodity': getCommodityName(r.commodity) || '',
         'Rake CMDT': r.rake_commodity_code || r.rake_cmdt || '',
         'Wagons': r.wagons || '',
@@ -180,6 +193,14 @@ export default function Reports() {
           className="bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-1.5 outline-none">
           {commodities.map(c => <option key={c} value={c}>{c === 'All' ? 'All Commodities' : getCommodityName(c)}</option>)}
         </select>
+        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
+          className="bg-muted border border-border text-foreground text-sm font-medium rounded-lg px-3 py-1.5 outline-none">
+          <option value="All">All Status / Stage</option>
+          <option value="supplied">🚚 Supplied Only</option>
+          <option value="matured">🎯 Matured Only</option>
+          <option value="both">⚡ Supplied & Matured Both</option>
+          <option value="pending">⏳ Pending / Unsupplied</option>
+        </select>
         <button onClick={saveCurrentFilter}
           className="inline-flex items-center gap-2 rounded-lg border border-primary/30 px-3 py-1.5 text-sm text-primary hover:bg-primary/10">
           <Save className="h-4 w-4" />
@@ -246,9 +267,9 @@ export default function Reports() {
                     <td className="px-4 py-3 text-xs text-muted-foreground">{getZoneForDivision(r.division) || '—'}</td>
                     <td className="px-4 py-3 text-foreground">{r.division ? getDivisionName(r.division) : '—'}</td>
                     <td className="px-4 py-3 text-xs whitespace-nowrap">
-                      <span className="bg-muted px-1.5 py-0.5 rounded">{r.station_from || '?'}</span>
+                      <span className="bg-muted px-1.5 py-0.5 rounded" title={r.station_from || ''}>{r.station_from ? getStationName(r.station_from) : '?'}</span>
                       <span className="mx-1 text-muted-foreground">→</span>
-                      <span className="bg-muted px-1.5 py-0.5 rounded">{r.station_to || '?'}</span>
+                      <span className="bg-muted px-1.5 py-0.5 rounded" title={r.station_to || ''}>{r.station_to ? getStationName(r.station_to) : '?'}</span>
                     </td>
                     <td className="px-4 py-3 text-foreground">{getCommodityName(r.commodity) || '—'}</td>
                     <td className="px-4 py-3 text-xs text-muted-foreground">{r.rake_commodity_code || r.rake_cmdt || '—'}</td>

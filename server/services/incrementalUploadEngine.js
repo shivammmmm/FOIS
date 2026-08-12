@@ -9,15 +9,15 @@ function norm(value) {
  * Must NEVER use mutable fields (arrival/departure dates, status, wagons, upload timestamps, batchId).
  */
 export function generateBusinessKey(record, fileType = "ODR") {
-  const typePrefix = fileType === "MaturedIndent" ? "MATURED" : "ODR";
-  const division = norm(record.division);
-  const number = norm(record.odr_number || record.indent_number || record.indentNo);
-  const stationFrom = norm(record.station_from || record.stationFrom);
-  const stationTo = norm(record.station_to || record.destination);
-  const commodity = norm(record.commodity);
-  const company = norm(record.company || record.cnsr || record.company_code);
+  const raw = record.raw_data || record;
+  const zone = norm(record.zone || record.from_zone || raw.zone || raw.ZONE || raw.from_zone || raw.FROM_ZONE || record.batch_zone || "");
+  const division = norm(record.division || record.from_division || raw.division || raw.DVSN || raw.DIVISION || "");
+  const stationFrom = norm(record.station_from || record.stationFrom || raw.station_from || raw['STTN FROM'] || raw['STATION FROM'] || "");
+  const no = norm(record.odr_number || record.indent_number || record.indentNo || raw['DEMAND NO.'] || raw['NO.'] || raw['indent_no'] || raw['indent_number'] || "");
+  const dateStr = norm(record.departure_date || record.indent_date || record.demand_date || record.indentDate || raw['DEMAND DATE'] || raw['DATE'] || raw['indent_date'] || "");
+  const timeStr = norm(record.indent_time || record.demand_time || record.indentTime || raw['DEMAND TIME'] || raw['TIME'] || raw['Time'] || raw['indent_time'] || "");
 
-  return `${typePrefix}|${division}|${number}|${stationFrom}|${stationTo}|${commodity}|${company}`;
+  return `${zone}|${division}|${stationFrom}|${no}|${dateStr}|${timeStr}`;
 }
 
 /**
@@ -30,7 +30,7 @@ export function generateRecordHash(record, fileType = "ODR") {
     ? {
         wagons_demanded: Number(record.wagons_demanded || record.wagons || 0),
         indent_date: norm(record.indent_date),
-        maturity_date: norm(record.maturity_date || record.expectedLoadingDate),
+        maturity_date: norm(record.maturity_date || record.expectedLoadingDate || record.met_with_date),
         rake_cmdt: norm(record.rake_cmdt || record.rake_commodity_code),
         wagon_type: norm(record.wagon_type),
         product: norm(record.product || record.product_code),
@@ -38,6 +38,8 @@ export function generateRecordHash(record, fileType = "ODR") {
     : {
         status: norm(record.status),
         wagons: Number(record.wagons || record.supplied_units || 0),
+        supplied_units: Number(record.supplied_units || 0),
+        supplied_time: norm(record.supplied_time),
         arrival_date: norm(record.arrival_date || record.expectedLoadingDate),
         departure_date: norm(record.departure_date || record.indentDate),
         rake_cmdt: norm(record.rake_cmdt || record.rake_commodity_code),
@@ -50,24 +52,106 @@ export function generateRecordHash(record, fileType = "ODR") {
 }
 
 /**
+ * Aggregate multiple destination/commodity/rake rows sharing the same parent business key
+ * into a single parent indent object with line_items array preserving detail rows.
+ */
+export function aggregateMultiLineIndents(parsedRecords, fileType = "ODR") {
+  const grouped = new Map();
+
+  for (const record of Array.isArray(parsedRecords) ? parsedRecords : []) {
+    const key = generateBusinessKey(record, fileType);
+    const existing = grouped.get(key);
+
+    const raw = record.raw_data || {};
+    // Read indented_units strictly from raw ODR fields — never from record.indented_units
+    // which may already be an aggregated (wrong) sum from a prior sync run.
+    const iu = Number(
+      raw['indented_units'] ??
+      raw['INDENTED UNTS'] ??
+      raw['INDENTED UNITS'] ??
+      raw['otsg_units'] ??
+      raw['otsg_8w'] ??
+      record.indented_units ??
+      record.wagons_demanded ??
+      0
+    );
+    // supplied_units in raw ODR represents the TOTAL rake supplied (written on one arbitrary row).
+    // Track it at parent level as MAX; do NOT distribute to individual line items.
+    const su = Number(
+      record.supplied_units ??
+      raw['SUPPLIED UNTS'] ??
+      raw['SUPPLIED UNITS'] ??
+      raw['supplied_units'] ??
+      0
+    );
+
+    const srNo = String(raw['srNo'] || raw['SR NO'] || raw['sr_no'] || "").trim();
+    const dedupKey = srNo || `${record.station_to || record.destination || ""}|${iu}`;
+
+    const lineItem = {
+      destination: record.station_to || record.destination || "",
+      station_to: record.station_to || record.destination || "",
+      commodity: record.commodity || record.commodity_code || "",
+      rake_cmdt: record.rake_cmdt || record.rake_commodity_code || "",
+      indented_units: iu,
+      supplied_units: su,
+      supplied_time: record.supplied_time || raw['SUPPLIED TIME'] || raw['supplied_time'] || "",
+      cnsr: record.company || record.cnsr || "",
+      cnsg: record.cnsg || "",
+      sr_no: srNo,
+      raw_data: raw,
+    };
+
+    if (!existing) {
+      grouped.set(key, {
+        ...record,
+        business_key: key,
+        indented_units: iu,
+        supplied_units: su,
+        line_items: new Map([[dedupKey, lineItem]]),
+      });
+    } else {
+      // Deduplicate: only add if this srNo not yet seen for this demand.
+      if (!existing.line_items.has(dedupKey)) {
+        existing.line_items.set(dedupKey, lineItem);
+      }
+
+      if (!existing.supplied_time && lineItem.supplied_time) {
+        existing.supplied_time = lineItem.supplied_time;
+      }
+
+      // Unique destinations / commodities list display
+      const allItems = Array.from(existing.line_items.values());
+      const destSet = new Set(allItems.map(l => l.station_to).filter(Boolean));
+      existing.station_to = Array.from(destSet).join(", ");
+      const cmdtSet = new Set(allItems.map(l => l.commodity).filter(Boolean));
+      if (cmdtSet.size > 0) existing.commodity = Array.from(cmdtSet).join(", ");
+    }
+  }
+
+  // Finalise each grouped demand: convert Map → Array, compute parent totals.
+  for (const item of grouped.values()) {
+    const lineItemsArr = Array.from(item.line_items.values());
+    item.line_items = lineItemsArr;
+    item.indented_units = lineItemsArr.reduce((sum, li) => sum + (Number(li.indented_units) || 0), 0);
+    item.supplied_units = lineItemsArr.reduce((sum, li) => sum + (Number(li.supplied_units) || 0), 0);
+    item.wagons = Math.max(item.supplied_units, item.indented_units);
+  }
+
+  return Array.from(grouped.values());
+}
+
+/**
  * Deduplicate rows inside the same uploaded Excel file.
  * Returns { uniqueRecords, duplicateRowsCount }.
  */
 export function deduplicateIntraFileRecords(parsedRecords, fileType = "ODR") {
-  const seenMap = new Map();
-  let duplicateRowsCount = 0;
-
-  for (const record of Array.isArray(parsedRecords) ? parsedRecords : []) {
-    const key = generateBusinessKey(record, fileType);
-    if (seenMap.has(key)) {
-      duplicateRowsCount++;
-    }
-    // Store latest occurrence
-    seenMap.set(key, record);
-  }
+  const aggregated = aggregateMultiLineIndents(parsedRecords, fileType);
+  const totalOriginal = Array.isArray(parsedRecords) ? parsedRecords.length : 0;
+  const duplicateRowsCount = totalOriginal - aggregated.length;
 
   return {
-    uniqueRecords: Array.from(seenMap.values()),
+    uniqueRecords: aggregated,
     duplicateRowsCount,
   };
 }
@@ -77,12 +161,13 @@ export function deduplicateIntraFileRecords(parsedRecords, fileType = "ODR") {
  * Returns { newRecords, updatedRecords, unchangedRecords }
  */
 export function classifyBatchRecords(parsedRecords, existingKeyMap, batchId, fileType = "ODR") {
+  const aggregated = aggregateMultiLineIndents(parsedRecords, fileType);
   const newRecords = [];
   const updatedRecords = [];
   const unchangedRecords = [];
 
-  for (const record of Array.isArray(parsedRecords) ? parsedRecords : []) {
-    const businessKey = generateBusinessKey(record, fileType);
+  for (const record of aggregated) {
+    const businessKey = record.business_key || generateBusinessKey(record, fileType);
     const recordHash = generateRecordHash(record, fileType);
 
     const existing = existingKeyMap.get(businessKey);
@@ -138,3 +223,4 @@ export function classifyBatchRecords(parsedRecords, existingKeyMap, batchId, fil
 
   return { newRecords, updatedRecords, unchangedRecords };
 }
+

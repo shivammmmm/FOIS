@@ -116,6 +116,8 @@ export const apiClient = {
   readOnlyMasters: {
     states: () => request("/api/masters/states"),
     districts: (state = "") => request(`/api/masters/districts${state ? `?state=${encodeURIComponent(state)}` : ""}`),
+    commodities: (type = "Commodity") => request(`/api/masters/commodities?type=${encodeURIComponent(type)}`),
+    stations: (limit = 5000) => request(`/api/station-master?limit=${encodeURIComponent(limit)}`),
   },
   notifications: {
     list: ({ page = 1, limit = 50 } = {}) =>
@@ -340,11 +342,24 @@ export const apiClient = {
         let details = {};
         for (let index = 0; index < totalChunks; index += 1) {
           const params = new URLSearchParams({ fileName, fileType, source, uploadId, index: String(index), total: String(totalChunks), zone });
-          const response = await fetch(`${API_BASE_URL}/api/admin/uploads/excel/chunk?${params}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/octet-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-            body: await file.slice(index * chunkSize, Math.min(file.size, (index + 1) * chunkSize)).arrayBuffer(),
-          });
+          let response;
+          let retries = 0;
+          while (retries < 3) {
+            try {
+              response = await fetch(`${API_BASE_URL}/api/admin/uploads/excel/chunk?${params}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/octet-stream", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                body: await file.slice(index * chunkSize, Math.min(file.size, (index + 1) * chunkSize)).arrayBuffer(),
+              });
+              if (response && response.ok) break;
+              retries += 1;
+              if (retries < 3) await new Promise((r) => setTimeout(r, 1000));
+            } catch (err) {
+              retries += 1;
+              if (retries >= 3) throw err;
+              await new Promise((r) => setTimeout(r, 1000));
+            }
+          }
           details = await response.json().catch(() => ({}));
           if (!response.ok) throw new Error(details.error || `Upload failed at part ${index + 1}: ${response.status}`);
         }

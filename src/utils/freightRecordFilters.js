@@ -121,3 +121,5 @@ export function isWagonType(value) {
 export function uniqueSortedOptions(values) {
   return ["All", ...new Set(values.map(normalizeFilterValue).filter(Boolean))].sort();
 }
+
+export { isSuppliedRecord, isMaturedRecord } from "./foisLifecycle.js";

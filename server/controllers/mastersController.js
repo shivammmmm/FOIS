@@ -1,15 +1,5 @@
-import { Pool } from "pg";
 
-const DATABASE_URL =
-  process.env.DATABASE_URL ||
-  "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-
-const pool = new Pool({ connectionString: DATABASE_URL });
-
-// --- Helper Utilities matching utils/mastersCrud.js ---
-function normalizeCode(code) {
-  return String(code || "").trim().toUpperCase();
-}
+import { pool } from "../db/pool.js";
 
 function normalizeName(name) {
   return String(name || "").trim();

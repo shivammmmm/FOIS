@@ -1,5 +1,10 @@
 export default function StatusBadge({ status, size = 'sm' }) {
   const config = {
+    // Rack lifecycle stages (freight_movements.data.status)
+    Indent:       { cls: 'bg-amber-100 text-amber-700 border-amber-200', label: 'Indent' },
+    Supplied:     { cls: 'bg-cyan-100 text-cyan-700 border-cyan-200', label: 'Supplied' },
+    Matured:      { cls: 'bg-emerald-100 text-emerald-700 border-emerald-200', label: 'Matured' },
+    Dispatched:   { cls: 'bg-emerald-100 text-emerald-700 border-emerald-200', label: 'Dispatched' },
     Inward:       { cls: 'bg-emerald-100 text-emerald-700 border-emerald-200', label: 'Inward' },
     Outward:      { cls: 'bg-blue-100 text-blue-700 border-blue-200', label: 'Outward' },
     Arrived:      { cls: 'bg-emerald-100 text-emerald-700 border-emerald-200', label: 'Arrived' },

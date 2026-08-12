@@ -5,6 +5,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import * as XLSX from "xlsx";
+import { pool } from "./db/pool.js";
 import { runSeeder, runZoneDivisionSeeder } from "../scripts/seedMasters.js";
 import {
   countTables,
@@ -30,6 +31,7 @@ import {
 import { createNotification } from "./notifications/service.js";
 import { filterHierarchy, movementDashboardSummary, pagedFoisReports, pagedMovements, unmappedSummary } from "./movementQueries.js";
 import { invalidateCachePrefix } from "./cache.js";
+import { generateBusinessKey, generateRecordHash, aggregateMultiLineIndents } from "./services/incrementalUploadEngine.js";
 import {
   ensureMatchingSchema,
   getMatchingSummary,
@@ -67,11 +69,13 @@ import {
   ensureStationMasterTable,
 } from "./utils/masterCatalogMigration.js";
 import {
+  formatUniqueRakeCode,
   generateBatchId,
   getIndentRowRejectionReason,
   parseIndentRow,
   parseODRRow,
 } from "../src/utils/odrcomparison.js";
+import { USER_CATEGORIES } from "../src/utils/userCategories.js";
 
 // Import the new clean Phase-1 modular controller
 import * as mastersController from "./controllers/mastersController.js";
@@ -156,12 +160,13 @@ function sheetToFoisRows(sheet, fileType) {
       rows: XLSX.utils.sheet_to_json(sheet, {
         defval: "",
         range: headerRow,
+        raw: true,
       }),
     };
   }
 
   // Header row not found in uploaded sheet -> auto-inject default FOIS headers
-  const rawAoA = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  const rawAoA = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true });
   if (!Array.isArray(rawAoA) || rawAoA.length === 0) {
     return { headerRowNumber: null, rows: [] };
   }
@@ -172,7 +177,7 @@ function sheetToFoisRows(sheet, fileType) {
 
   return {
     headerRowNumber: 1,
-    rows: XLSX.utils.sheet_to_json(newSheet, { defval: "" }),
+    rows: XLSX.utils.sheet_to_json(newSheet, { defval: "", raw: true }),
   };
 }
 
@@ -227,23 +232,16 @@ function isWagonStockType(value) {
 }
 
 async function bulkLookupCommodityMasters(codes, type = 'Commodity') {
-  const { Pool } = await import("pg");
-  const databaseUrl =
-    process.env.DATABASE_URL ||
-    "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-
-  const pool = new Pool({ connectionString: databaseUrl });
   const unique = [
     ...new Set(codes.map(normalizeCommodityCode).filter(Boolean)),
   ];
   if (unique.length === 0) {
-    await pool.end();
     return {};
   }
 
-  await ensureCommodityCatalogTable(pool);
+  await ensureCommodityCatalogTable(dbPool);
 
-  const result = await pool.query(
+  const result = await dbPool.query(
     `SELECT code, name, commodity_code, commodity_name
      FROM commodity_master
      WHERE code = ANY($1::text[]) AND type = $2`,
@@ -260,7 +258,6 @@ async function bulkLookupCommodityMasters(codes, type = 'Commodity') {
     };
   }
 
-  await pool.end();
   return map;
 }
 
@@ -386,6 +383,11 @@ function sanitizeUser(user) {
     id: user.id,
     username: user.username,
     email: user.email,
+    mobile: user.mobile,
+    first_name: user.first_name,
+    last_name: user.last_name,
+    category: user.category,
+    auth_provider: user.auth_provider,
     full_name: user.full_name,
     role: user.role,
     created_date: user.created_date,
@@ -499,122 +501,134 @@ async function enrichStationFields(records, batchId) {
   return enriched;
 }
 
-async function createMovementPreferenceNotifications(records, batchId) {
-  for (const record of Array.isArray(records) ? records : []) {
-    if (record.is_duplicate) {
-      console.info('[NotificationDelivery] skipped duplicate record for notifications', { batchId, odr: record.odr_number });
-      continue;
-    }
-    const movementType = record.movement_type || "Outward";
-    const stationCode = record.station_from || record.station_to;
-    if (!stationCode) continue;
-
-    const fromStationDisplay = record.from_station_name ? `${record.from_station_name} (${record.station_from})` : record.station_from || "-";
-    const toStationDisplay = record.to_station_name ? `${record.to_station_name} (${record.station_to})` : record.station_to || "-";
-    const commodityName = record.rake_commodity_name || record.commodity_name || record.product_name;
-    const commodityCode = record.rake_commodity_code || record.commodity_code || record.product_code || record.commodity || record.rake_cmdt;
-    const commodityDisplay = commodityName
-      ? `${commodityName}${commodityCode ? ` (${commodityCode})` : ""}`
-      : commodityCode || "-";
-
-    const raw = record.raw_data || {};
-    const indentedUnits = Number(record.indented_units || raw.indented_units || raw.indented_8w || record.wagons || 0);
-    const suppliedUnits = Number(record.supplied_units || raw.supplied_units || 0);
-    const suppliedTime = record.supplied_time || raw.supplied_time || raw.supplied_date || "";
-    const demandDate = record.departure_date || record.demand_date || raw.DATE || raw.demand_date || "-";
-
-    const isSuppliedStage = suppliedUnits > 0 || Boolean(suppliedTime) || record.last_action === "UPDATED";
-
-    let notifType = "";
-    let title = "";
-    let message = "";
-
-    if (isSuppliedStage) {
-      // Stage 2: Rake Supplied
-      notifType = "IndentSupplied";
-      title = `🚚 Rake Supplied: #${record.odr_number || record.id || ""}`;
-      message = `📍 Station: ${fromStationDisplay}\nCommodity: ${commodityDisplay}\nSupplied: ${suppliedUnits} / ${indentedUnits || "-"} Units\nSupply Date: ${suppliedTime || demandDate}`;
-    } else {
-      // Stage 1: New Rake Demand
-      notifType = "IndentPlaced";
-      title = `📝 New Rake Demand: #${record.odr_number || record.id || ""}`;
-      message = `📍 Station: ${fromStationDisplay}\nCommodity: ${commodityDisplay}\nDestination: ${toStationDisplay}\nUnits: ${indentedUnits || "-"} Units\nDemand Date: ${demandDate}`;
-    }
-
-    const demandKey = record.odr_number || record.business_key || record.id || "";
-    const movementRef = isSuppliedStage
-      ? `DEMAND:${demandKey}:IndentSupplied:${suppliedUnits}:${suppliedTime || demandDate}`
-      : `DEMAND:${demandKey}:IndentPlaced`;
-
-    try {
-      await createNotification({
-        movement_reference: movementRef,
-        station_code: stationCode,
-        notification_type: notifType,
-        type: movementType,
-        title,
-        message,
-        severity: "info",
-        related_odr: record.odr_number || null,
-        related_division: record.division || null,
-        batch_id: batchId,
-        data: {
-          movement: record,
-          from_station: fromStationDisplay,
-          to_station: toStationDisplay,
-          commodity: commodityDisplay,
-          indented_units: indentedUnits,
-          supplied_units: suppliedUnits,
-          demand_date: demandDate,
-          supplied_time: suppliedTime,
-        },
-      });
-    } catch (error) {
-      console.error("[NotificationDelivery] in-app notification failed", {
-        batchId,
-        odr: record.odr_number,
-        error: error?.message,
-      });
-    }
-  }
-}
-
 app.use(cors());
-app.use(express.json({ limit: "25mb" }));
+app.use(express.json({ limit: "100mb" }));
+app.use(express.urlencoded({ limit: "100mb", extended: true }));
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "fois-api", storage: getStorageStatus() });
 });
 
 // Auth routes
+async function generateUniqueUsername(base) {
+  const cleanBase = String(base || "user").trim().toLowerCase().replace(/[^a-z0-9._-]/g, "") || "user";
+  let candidate = cleanBase;
+  let suffix = 1;
+  while (await findUserByIdentifier(candidate)) {
+    candidate = `${cleanBase}${suffix}`;
+    suffix += 1;
+  }
+  return candidate;
+}
+
 app.post("/api/auth/signup", async (req, res, next) => {
   try {
-    const { username, email, password } = req.body || {};
+    const firstName = String(req.body?.firstName || req.body?.first_name || "").trim();
+    const lastName = String(req.body?.lastName || req.body?.last_name || "").trim();
+    const category = String(req.body?.category || "").trim();
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const mobile = String(req.body?.mobile || req.body?.phone || "").trim();
+    const password = String(req.body?.password || "");
 
-    if (!username || !email || !password) {
-      return res
-        .status(400)
-        .json({ error: "username, email, password are required" });
+    if (!firstName || !lastName || !category || !password) {
+      return res.status(400).json({ error: "firstName, lastName, category and password are required" });
+    }
+    // Fixed list plus a free-text "Other" category the user types themselves.
+    if (!USER_CATEGORIES.includes(category) && category.length > 100) {
+      return res.status(400).json({ error: "Category must be 100 characters or fewer" });
+    }
+    if (!email && !mobile) {
+      return res.status(400).json({ error: "Provide either an email or a mobile number" });
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: "Enter a valid email address" });
+    }
+    if (mobile && !/^[6-9]\d{9}$/.test(mobile)) {
+      return res.status(400).json({ error: "Enter a valid 10-digit mobile number" });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters" });
     }
 
-    const existingByUsername = await findUserByIdentifier(username);
-    const existingByEmail = await findUserByIdentifier(email);
-
-    if (existingByUsername || existingByEmail) {
-      return res.status(409).json({ error: "User already exists" });
+    if (email && (await findUserByIdentifier(email))) {
+      return res.status(409).json({ error: "An account with this email already exists" });
+    }
+    if (mobile && (await findUserByIdentifier(mobile))) {
+      return res.status(409).json({ error: "An account with this mobile number already exists" });
     }
 
-    const passwordHash = await bcrypt.hash(String(password), 10);
+    const username = await generateUniqueUsername(email ? email.split("@")[0] : mobile);
+    const passwordHash = await bcrypt.hash(password, 10);
 
     const user = await createUser({
-      username: String(username),
-      email: String(email),
-      full_name: String(username),
+      username,
+      email: email || null,
+      mobile: mobile || null,
+      first_name: firstName,
+      last_name: lastName,
+      category,
+      full_name: `${firstName} ${lastName}`.trim(),
       role: "user",
       password_hash: passwordHash,
     });
 
     return res.status(201).json(sanitizeUser(user));
+  } catch (error) {
+    next(error);
+  }
+});
+
+// "Continue with Google" for both Login and Sign Up: the frontend obtains an
+// ID token via Google Identity Services and hands it here. We verify it was
+// really issued by Google for THIS app (aud === GOOGLE_CLIENT_ID) before
+// trusting the email inside it, then find-or-create the matching account.
+app.post("/api/auth/google", async (req, res, next) => {
+  try {
+    const clientId = process.env.GOOGLE_CLIENT_ID;
+    if (!clientId) {
+      return res.status(501).json({ error: "Google Sign-In is not configured yet. Set GOOGLE_CLIENT_ID / VITE_GOOGLE_CLIENT_ID." });
+    }
+    const credential = String(req.body?.credential || "").trim();
+    if (!credential) return res.status(400).json({ error: "Missing Google credential" });
+
+    const verifyResponse = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+    if (!verifyResponse.ok) {
+      return res.status(401).json({ error: "Invalid or expired Google credential" });
+    }
+    const payload = await verifyResponse.json();
+    if (payload.aud !== clientId) {
+      return res.status(401).json({ error: "Google credential was not issued for this app" });
+    }
+    if (payload.email_verified !== "true" && payload.email_verified !== true) {
+      return res.status(401).json({ error: "Google account email is not verified" });
+    }
+
+    const email = String(payload.email || "").trim().toLowerCase();
+    if (!email) return res.status(400).json({ error: "Google account has no email" });
+
+    let user = await findUserByIdentifier(email);
+    if (!user) {
+      const username = await generateUniqueUsername(email.split("@")[0]);
+      const randomPassword = crypto.randomBytes(24).toString("hex");
+      user = await createUser({
+        username,
+        email,
+        first_name: payload.given_name || "",
+        last_name: payload.family_name || "",
+        full_name: payload.name || email,
+        role: "user",
+        password_hash: await bcrypt.hash(randomPassword, 10),
+        auth_provider: "google",
+      });
+    }
+
+    const token = jwt.sign(
+      { sub: user.id, username: user.username, role: user.role },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
+    return res.json({ token, user: sanitizeUser(user) });
   } catch (error) {
     next(error);
   }
@@ -813,12 +827,6 @@ app.get(
 // Requirement: authenticated GET only (no strict admin role gate).
 app.get("/api/masters/states", requireAuth, async (req, res, next) => {
   try {
-    const { Pool } = await import("pg");
-    const databaseUrl =
-      process.env.DATABASE_URL ||
-      "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-    const pool = new Pool({ connectionString: databaseUrl });
-
     const result = await pool.query(
       `SELECT id, code, name, active
          FROM state_master
@@ -826,7 +834,6 @@ app.get("/api/masters/states", requireAuth, async (req, res, next) => {
          ORDER BY code ASC`
     );
 
-    await pool.end();
     return res.json({ items: result.rows, count: result.rowCount });
   } catch (e) {
     return res
@@ -837,9 +844,6 @@ app.get("/api/masters/states", requireAuth, async (req, res, next) => {
 
 app.get("/api/masters/districts", requireAuth, async (req, res) => {
   try {
-    const { Pool } = await import("pg");
-    const databaseUrl = process.env.DATABASE_URL || "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-    const pool = new Pool({ connectionString: databaseUrl });
     const state = String(req.query.state || req.query.state_code || req.query.state_id || "").trim().toUpperCase();
     const result = await pool.query(
       `SELECT id, code, name, parent_code, active
@@ -849,7 +853,6 @@ app.get("/api/masters/districts", requireAuth, async (req, res) => {
        ORDER BY name ASC`,
       [state]
     );
-    await pool.end();
     return res.json({ items: result.rows, count: result.rowCount });
   } catch (error) {
     return res.status(500).json({ error: error?.message || "Failed to load districts" });
@@ -1183,7 +1186,7 @@ app.post(
       const entry = pendingUploadChunks.get(uploadId) || { fileName, fileType, total, chunks: new Array(total), size: 0, createdAt: Date.now() };
       if (entry.fileName !== fileName || entry.fileType !== fileType || entry.total !== total) return res.status(400).json({ error: "Upload chunk metadata mismatch" });
       if (!entry.chunks[index]) { entry.chunks[index] = req.body; entry.size += req.body.length; }
-      if (entry.size > 25 * 1024 * 1024) { pendingUploadChunks.delete(uploadId); return res.status(413).json({ error: "Excel file exceeds 25 MB" }); }
+      if (entry.size > 100 * 1024 * 1024) { pendingUploadChunks.delete(uploadId); return res.status(413).json({ error: "Excel file exceeds 100 MB" }); }
       pendingUploadChunks.set(uploadId, entry);
       const receivedCount = entry.chunks.reduce((count, chunk) => count + (Buffer.isBuffer(chunk) ? 1 : 0), 0);
       if (receivedCount !== total) return res.json({ success: true, received: receivedCount, total });
@@ -1192,11 +1195,21 @@ app.post(
       pendingUploadChunks.delete(uploadId);
       const token = getAuthToken(req);
       const params = new URLSearchParams({ fileName, fileType, zone: pendingZone });
-      const upstream = await fetch(`http://127.0.0.1:${port}/api/admin/uploads/excel?${params}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/octet-stream", Authorization: `Bearer ${token}` },
-        body: Buffer.concat(entry.chunks),
-      });
+      const fullBuffer = Buffer.concat(entry.chunks);
+      let upstream;
+      try {
+        upstream = await fetch(`http://127.0.0.1:${port}/api/admin/uploads/excel?${params}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream", Authorization: `Bearer ${token}` },
+          body: fullBuffer,
+        });
+      } catch {
+        upstream = await fetch(`http://localhost:${port}/api/admin/uploads/excel?${params}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/octet-stream", Authorization: `Bearer ${token}` },
+          body: fullBuffer,
+        });
+      }
       const payload = await upstream.json().catch(() => ({ error: "Upload processing failed" }));
       return res.status(upstream.status).json(payload);
     } catch (error) { next(error); }
@@ -1204,10 +1217,118 @@ app.post(
 );
 
 app.post(
+  "/api/admin/uploads/excel/preview",
+  requireAuth,
+  requireRoles(ADMIN_ROLES),
+  express.raw({ type: "application/octet-stream", limit: "100mb" }),
+  async (req, res, next) => {
+    try {
+      const isBinaryUpload = Buffer.isBuffer(req.body);
+      const fileName = (isBinaryUpload ? req.query.fileName : req.body?.fileName) || "upload.xlsx";
+      const fileType = (isBinaryUpload ? req.query.fileType : req.body?.fileType) || "ODR";
+      const uploadSource = (isBinaryUpload ? req.query.source : req.body?.source) || "Excel";
+      const selectedZone = String((isBinaryUpload ? req.query.zone : req.body?.zone) || "ALL").trim();
+      const buffer = isBinaryUpload ? req.body : Buffer.from(String(req.body?.fileBase64 || ""), "base64");
+
+      const workbook = XLSX.read(buffer, { type: "buffer" });
+      const sheetNames = Array.isArray(workbook.SheetNames) ? workbook.SheetNames : [];
+      if (sheetNames.length === 0) throw createClientUploadError("Workbook has no sheets");
+
+      let parsedRecords = [];
+      for (const sheetName of sheetNames) {
+        const { rows: sheetRows } = sheetToFoisRows(workbook.Sheets[sheetName], fileType);
+        if (!Array.isArray(sheetRows)) continue;
+        let sheetParsed = [];
+        if (fileType === "ODR") {
+          sheetParsed = sheetRows.map((row, idx) => parseODRRow(row, "preview", idx + 1)).filter(Boolean);
+        } else {
+          sheetParsed = sheetRows.map((row, idx) => parseIndentRow(row, "preview", idx + 1)).filter(Boolean);
+        }
+        parsedRecords.push(...sheetParsed);
+      }
+
+      const rows_parsed = parsedRecords.length;
+      let estimated_new = 0;
+      let estimated_supplied_updates = 0;
+      let estimated_matured_updates = 0;
+      let estimated_updated = 0;
+      let estimated_skipped = 0;
+      let duplicate_rows_in_file = 0;
+
+      const { deduplicateIntraFileRecords } = await import("./services/incrementalUploadEngine.js");
+      const { uniqueRecords, duplicateRowsCount } = deduplicateIntraFileRecords(parsedRecords, fileType);
+      duplicate_rows_in_file = duplicateRowsCount;
+
+      if (fileType === "ODR") {
+        const numbers = [...new Set(uniqueRecords.map((r) => r.odr_number).filter(Boolean))];
+        const existingRows = numbers.length
+          ? await pool.query(
+              `SELECT data->>'odr_number' AS odr_number, data FROM freight_movements WHERE data->>'odr_number' = ANY($1::text[])`,
+              [numbers]
+            )
+          : { rows: [] };
+        const existingMap = new Map(existingRows.rows.map((r) => [r.odr_number, r]));
+
+        for (const record of uniqueRecords) {
+          const hasSupplied = Boolean(record.supplied_time || record.supplied_units > 0 || String(record.status).toLowerCase() === "supplied");
+          const existing = existingMap.get(record.odr_number);
+          if (existing) {
+            if (hasSupplied) {
+              estimated_supplied_updates++;
+              estimated_updated++;
+            } else {
+              estimated_skipped++;
+            }
+          } else {
+            estimated_new++;
+            if (hasSupplied) estimated_supplied_updates++;
+          }
+        }
+      } else {
+        const numbers = [...new Set(uniqueRecords.map((r) => r.indent_number).filter(Boolean))];
+        const existingRows = numbers.length
+          ? await pool.query(
+              `SELECT data->>'odr_number' AS odr_number, data FROM freight_movements WHERE data->>'odr_number' = ANY($1::text[])`,
+              [numbers]
+            )
+          : { rows: [] };
+        const existingMap = new Map(existingRows.rows.map((r) => [r.odr_number, r]));
+
+        for (const record of uniqueRecords) {
+          const existing = existingMap.get(record.indent_number);
+          if (existing) {
+            estimated_matured_updates++;
+            estimated_updated++;
+          } else {
+            estimated_new++;
+          }
+        }
+      }
+
+      return res.json({
+        success: true,
+        detected_zone: selectedZone,
+        next_version_number: 1,
+        rows_parsed,
+        estimated_new,
+        estimated_supplied_updates,
+        estimated_matured_updates,
+        estimated_updated,
+        estimated_skipped,
+        duplicate_rows_in_file,
+        warnings: [],
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+app.post(
   "/api/admin/uploads/excel",
   requireAuth,
   requireRoles(ADMIN_ROLES),
-  express.raw({ type: "application/octet-stream", limit: "25mb" }),
+  express.raw({ type: "application/octet-stream", limit: "100mb" }),
   async (req, res, next) => {
     try {
       const isBinaryUpload = Buffer.isBuffer(req.body);
@@ -1231,14 +1352,22 @@ app.post(
       const buffer = isBinaryUpload ? req.body : Buffer.from(String(fileBase64), "base64");
       const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
 
-      const priorUploads = await listRecords("UploadLog", {
-        filter: { file_hash: fileHash },
-        limit: 1,
-      });
-      if (priorUploads.length > 0) {
-        const prior = priorUploads[0];
+      const priorUploads = await dbPool.query(
+        `SELECT data FROM upload_logs
+         WHERE data->>'file_hash' = $1
+            OR (
+              data->>'file_type' = $2
+              AND data->>'zone' = $3
+              AND (data->>'records_valid')::int > 0
+              AND created_date > NOW() - INTERVAL '15 minutes'
+            )
+         ORDER BY created_date DESC LIMIT 1`,
+        [fileHash, fileType, selectedZone]
+      );
+      if (priorUploads.rows.length > 0) {
+        const prior = priorUploads.rows[0].data || {};
         return res.status(409).json({
-          error: `This file was already uploaded as batch ${prior.batch_id} on ${prior.uploaded_at || prior.upload_time || prior.created_date}. Duplicate uploads are blocked.`,
+          error: `This data batch was already uploaded as batch ${prior.batch_id} at ${prior.uploaded_at || prior.upload_time || prior.created_date}. Duplicate uploads are blocked.`,
           duplicate: true,
           batch_id: prior.batch_id,
           uploaded_at: prior.uploaded_at || prior.upload_time || prior.created_date,
@@ -1364,72 +1493,159 @@ app.post(
       let suppliedStatusUpdates = 0;
       let maturedStatusUpdates = 0;
 
-      const { Pool } = await import("pg");
-      const databaseUrl =
-        process.env.DATABASE_URL ||
-        "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-      const pool = new Pool({ connectionString: databaseUrl });
+      const pool = dbPool;
 
       if (fileType === "ODR") {
-        const buildDuplicateKey = (record) =>
-          [
-            record.odr_number,
-            record.station_from,
-            record.station_to,
-            record.commodity,
-            record.arrival_date,
-            record.departure_date,
-          ].join("|");
+        const aggregatedRecords = aggregateMultiLineIndents(parsedRecords, "ODR");
 
         const countMap = {};
-        parsedRecords.forEach((record) => {
-          const key = buildDuplicateKey(record);
+        aggregatedRecords.forEach((record) => {
+          const key = record.business_key || generateBusinessKey(record, "ODR");
           countMap[key] = (countMap[key] || 0) + 1;
         });
 
-        const batchOdrNumbers = [...new Set(parsedRecords.map((r) => r.odr_number).filter(Boolean))];
-        const existingRows = batchOdrNumbers.length
+        const keysToQuery = aggregatedRecords.map(r => r.business_key || generateBusinessKey(r, "ODR")).filter(Boolean);
+        const existingRows = keysToQuery.length
           ? await pool.query(
-              `SELECT id, data->>'odr_number' AS odr_number, data->>'station_from' AS station_from,
-                      data->>'station_to' AS station_to, data->>'commodity' AS commodity,
-                      data->>'arrival_date' AS arrival_date, data->>'departure_date' AS departure_date,
-                      data
-               FROM freight_movements WHERE data->>'odr_number' = ANY($1::text[])`,
-              [batchOdrNumbers]
+              `SELECT id, data, business_key FROM freight_movements WHERE business_key = ANY($1::text[]) OR (data->>'business_key') = ANY($1::text[])`,
+              [keysToQuery]
             )
           : { rows: [] };
-        
+
         const existingMap = new Map();
         existingRows.rows.forEach((row) => {
-          existingMap.set(buildDuplicateKey(row), row);
+          const bKey = row.business_key || row.data?.business_key || generateBusinessKey(row.data, "ODR");
+          existingMap.set(bKey, row);
         });
 
+        const toUpdateODR = [];
+        const notifsToPush = [];
         const toInsert = [];
-        for (const record of parsedRecords) {
-          const key = buildDuplicateKey(record);
+
+        for (const record of aggregatedRecords) {
+          const key = record.business_key || generateBusinessKey(record, "ODR");
           const existing = existingMap.get(key);
-          if (existing && record.supplied_time) {
-            // Update existing record status to Supplied
+          const hasSuppliedState = Boolean(record.supplied_time || (record.supplied_units && Number(record.supplied_units) > 0));
+
+          if (existing) {
+            const prevSuppliedUnits = Number(existing.data.supplied_units || 0);
+            const prevSuppliedTime = String(existing.data.supplied_time || "").trim();
+            const currSuppliedUnits = Number(record.supplied_units || 0);
+            const currSuppliedTime = String(record.supplied_time || "").trim();
+
+            const isSupplyChanged = hasSuppliedState && (
+              currSuppliedUnits !== prevSuppliedUnits ||
+              (currSuppliedTime && currSuppliedTime !== prevSuppliedTime)
+            );
+
+            const updatedStatus = existing.data.status === "Matured" || existing.data.status === "Dispatched"
+              ? existing.data.status
+              : (hasSuppliedState || isSupplyChanged ? "Supplied" : (existing.data.status || "Indent"));
+
+            const mergedRawData = { ...existing.data.raw_data, ...record.raw_data };
+            const mergedLineItems = record.line_items || existing.data.line_items || [];
+
             const updatedData = {
               ...existing.data,
-              status: "Supplied",
-              supplied_time: record.supplied_time,
-              supplied_units: record.supplied_units || record.wagons,
-              wagons: record.wagons || existing.data.wagons,
-              cnsg: record.cnsg || existing.data.cnsg,
+              business_key: key,
+              unique_rake_code: formatUniqueRakeCode(key),
+              status: updatedStatus,
+              supplied_time: currSuppliedTime || prevSuppliedTime,
+              supplied_units: currSuppliedUnits > 0 ? currSuppliedUnits : prevSuppliedUnits,
+              wagons: Math.max(Number(existing.data.wagons || 0), currSuppliedUnits, Number(record.indented_units || 0)),
+              indented_units: record.indented_units || existing.data.indented_units,
+              line_items: mergedLineItems,
+              raw_data: mergedRawData,
               updated_at: new Date().toISOString(),
             };
-            await pool.query(
-              `UPDATE freight_movements SET data = $1, updated_date = NOW() WHERE id = $2`,
-              [JSON.stringify(updatedData), existing.id]
-            );
-            suppliedStatusUpdates++;
+
+            toUpdateODR.push({ id: existing.id, data: updatedData });
+
+            if (isSupplyChanged) {
+              suppliedStatusUpdates++;
+              notifsToPush.push({
+                movement_reference: `DEMAND:${key}:RackSupplied:${updatedData.supplied_units}:${updatedData.supplied_time}`,
+                station_code: updatedData.station_from || record.station_from,
+                notification_type: "RackSupplied",
+                type: record.movement_type || "Outward",
+                title: `🚚 Rack Supplied: ${updatedData.unique_rake_code || `#${record.odr_number || ""}`}`,
+                message: `🔖 Rake ID: ${updatedData.unique_rake_code || "-"}\n📍 Station: ${updatedData.station_from || "-"}\nCommodity: ${updatedData.commodity || "-"}\nSupplied: ${updatedData.supplied_units} / ${updatedData.indented_units || "-"} Units\nSupply Date: ${updatedData.supplied_time || "-"}`,
+                severity: "info",
+                related_odr: record.odr_number,
+                related_division: updatedData.division,
+                batch_id: batchId,
+                data: { movement: updatedData },
+              });
+            }
             updatedRecords++;
           } else {
-            record.is_duplicate = countMap[key] > 1 || existingMap.has(key);
-            if (record.is_duplicate) duplicatesFound++;
-            else newIndentsAdded++;
-            toInsert.push(record);
+            record.business_key = key;
+            record.unique_rake_code = formatUniqueRakeCode(key);
+            record.is_duplicate = countMap[key] > 1;
+            if (record.is_duplicate) {
+              duplicatesFound++;
+            } else {
+              newIndentsAdded++;
+              const initialStatus = hasSuppliedState ? "Supplied" : "Indent";
+              record.status = initialStatus;
+
+              if (hasSuppliedState) {
+                suppliedStatusUpdates++;
+              }
+
+              // Stage 1 Notification: New Rack Indent
+              notifsToPush.push({
+                movement_reference: `DEMAND:${key}:NewRackIndent`,
+                station_code: record.station_from,
+                notification_type: "NewRackIndent",
+                type: record.movement_type || "Outward",
+                title: `📝 New Rack Indent: ${record.unique_rake_code || `#${record.odr_number || ""}`}`,
+                message: `🔖 Rake ID: ${record.unique_rake_code || "-"}\n📍 Station: ${record.station_from || "-"}\nCommodity: ${record.commodity || "-"}\nDestination: ${record.station_to || "-"}\nUnits: ${record.indented_units || "-"} Units`,
+                severity: "info",
+                related_odr: record.odr_number,
+                related_division: record.division,
+                batch_id: batchId,
+                data: { movement: record },
+              });
+
+              if (hasSuppliedState) {
+                // Also trigger supply notification if initial upload already contains supply details
+                notifsToPush.push({
+                  movement_reference: `DEMAND:${key}:RackSupplied:${record.supplied_units}:${record.supplied_time}`,
+                  station_code: record.station_from,
+                  notification_type: "RackSupplied",
+                  type: record.movement_type || "Outward",
+                  title: `🚚 Rack Supplied: ${record.unique_rake_code || `#${record.odr_number || ""}`}`,
+                  message: `🔖 Rake ID: ${record.unique_rake_code || "-"}\n📍 Station: ${record.station_from || "-"}\nCommodity: ${record.commodity || "-"}\nSupplied: ${record.supplied_units} / ${record.indented_units || "-"} Units`,
+                  severity: "info",
+                  related_odr: record.odr_number,
+                  related_division: record.division,
+                  batch_id: batchId,
+                  data: { movement: record },
+                });
+              }
+
+              toInsert.push(record);
+            }
+          }
+        }
+
+        if (toUpdateODR.length > 0) {
+          const chunkSize = 500;
+          for (let i = 0; i < toUpdateODR.length; i += chunkSize) {
+            const chunk = toUpdateODR.slice(i, i + chunkSize);
+            const values = [];
+            const placeholders = chunk.map((item, idx) => {
+              const offset = idx * 2;
+              values.push(String(item.id), item.data);
+              return `($${offset + 1}::text, $${offset + 2}::jsonb)`;
+            });
+            await pool.query(
+              `UPDATE freight_movements SET data = v.data, updated_date = NOW()
+               FROM (VALUES ${placeholders.join(",")}) AS v(id, data)
+               WHERE freight_movements.id = v.id`,
+              values
+            );
           }
         }
 
@@ -1437,52 +1653,149 @@ app.post(
           await createRecords("FreightMovement", toInsert);
           insertedRecords = toInsert.length;
         }
+
+        // Fire notifications in background
+        Promise.all(notifsToPush.map((n) => createNotification(n).catch(() => undefined))).catch(() => undefined);
+
         await invalidateCachePrefix("movement:");
-        await createMovementPreferenceNotifications(parsedRecords, batchId).catch((error) => {
-          console.error("[NotificationDelivery] movement preference notifications failed", {
-            batchId,
-            error: error?.message,
-          });
-        });
 
       } else {
-        // MaturedIndent upload: match existing FreightMovement and update status to Matured
-        const batchIndentNumbers = [...new Set(parsedRecords.map((r) => r.indent_number).filter(Boolean))];
-        const existingMovements = batchIndentNumbers.length
+        // MaturedIndent upload: match existing FreightMovement by exact 6-tuple Business Key
+        const aggregatedMatured = aggregateMultiLineIndents(parsedRecords, "MaturedIndent");
+        const keysToMatch = aggregatedMatured.map(r => generateBusinessKey(r, "MaturedIndent")).filter(Boolean);
+
+        const existingMovements = keysToMatch.length
           ? await pool.query(
-              `SELECT id, data FROM freight_movements WHERE data->>'odr_number' = ANY($1::text[])`,
-              [batchIndentNumbers]
+              `SELECT id, data, business_key FROM freight_movements WHERE business_key = ANY($1::text[]) OR (data->>'business_key') = ANY($1::text[])`,
+              [keysToMatch]
             )
           : { rows: [] };
 
         const movementMap = new Map();
         existingMovements.rows.forEach((row) => {
-          const num = row.data?.odr_number || row.data?.indent_number;
-          if (num) movementMap.set(String(num).trim(), row);
+          const bKey = row.business_key || row.data?.business_key || generateBusinessKey(row.data, "ODR");
+          movementMap.set(bKey, row);
         });
 
-        for (const record of parsedRecords) {
-          const match = movementMap.get(String(record.indent_number).trim());
+        const toUpdateMatured = [];
+        const maturedNotifs = [];
+
+        for (const record of aggregatedMatured) {
+          const key = generateBusinessKey(record, "MaturedIndent");
+          const match = movementMap.get(key);
+
+          // Must come ONLY from an actual "MET WITH DATE" value. record.maturity_date
+          // falls back to the expected loading date when no real MET WITH DATE exists
+          // (see parseIndentRow), so it is NOT proof of maturity and must never be used
+          // here - that fallback previously caused nearly every matched rack to be
+          // marked "Matured" the moment any Matured Indent row referenced it.
+          const metWithDate = record.met_with_date || record.raw_data?.['MET WITH DATE'] || record.raw_data?.['METWITH DATE'] || record.raw_data?.['met_with_date'] || "";
+          const hasMetWithDate = Boolean(metWithDate && String(metWithDate).trim() !== "" && String(metWithDate).trim() !== "-");
+
           if (match) {
             record.odr_matched = true;
             record.matched_odr_number = record.indent_number;
+
+            const updatedStatus = hasMetWithDate ? "Matured" : (match.data.status || "Indent");
+            const mergedRawData = { ...match.data.raw_data, ...record.raw_data, 'MET WITH DATE': metWithDate };
+
+            const existingSupplied = parseInt(match.data.supplied_units, 10) || 0;
+            const maturedUnits = parseInt(record.wagons_demanded || record.indented_units || record.supplied_units, 10) || 0;
+            const finalSuppliedUnits = existingSupplied > 0 ? existingSupplied : maturedUnits;
+
             const updatedData = {
               ...match.data,
-              status: "Matured",
-              matured_date: record.maturity_date || record.indent_date,
+              business_key: key,
+              unique_rake_code: formatUniqueRakeCode(key),
+              status: updatedStatus,
+              matured_date: metWithDate || match.data.matured_date,
+              met_with_date: metWithDate || match.data.met_with_date,
+              indented_units: match.data.indented_units || record.indented_units || record.wagons_demanded,
+              supplied_units: finalSuppliedUnits,
+              supplied_time: match.data.supplied_time || metWithDate || "",
+              raw_data: mergedRawData,
               updated_at: new Date().toISOString(),
             };
-            await pool.query(
-              `UPDATE freight_movements SET data = $1, updated_date = NOW() WHERE id = $2`,
-              [JSON.stringify(updatedData), match.id]
-            );
-            maturedStatusUpdates++;
+
+            toUpdateMatured.push({ id: match.id, data: updatedData });
+
+            if (hasMetWithDate) {
+              maturedStatusUpdates++;
+              maturedNotifs.push({
+                movement_reference: `DEMAND:${key}:RackDispatched:${metWithDate}`,
+                station_code: updatedData.station_from || record.station_from,
+                notification_type: "RackDispatched",
+                type: record.movement_type || "Outward",
+                title: `🚆 Rack Matured / Dispatched: ${updatedData.unique_rake_code || `#${record.indent_number || ""}`}`,
+                message: `🔖 Rake ID: ${updatedData.unique_rake_code || "-"}\n📍 Station: ${updatedData.station_from || "-"}\nDestination: ${updatedData.station_to || "-"}\nMatured & Dispatched Date: ${metWithDate}`,
+                severity: "success",
+                related_odr: record.indent_number,
+                related_division: updatedData.division,
+                batch_id: batchId,
+                data: { movement: updatedData },
+              });
+            }
             updatedRecords++;
           }
         }
 
-        await createRecords("MaturedIndent", parsedRecords);
-        insertedRecords = parsedRecords.length;
+        if (toUpdateMatured.length > 0) {
+          const chunkSize = 500;
+          for (let i = 0; i < toUpdateMatured.length; i += chunkSize) {
+            const chunk = toUpdateMatured.slice(i, i + chunkSize);
+            const values = [];
+            const placeholders = chunk.map((item, idx) => {
+              const offset = idx * 2;
+              values.push(String(item.id), item.data);
+              return `($${offset + 1}::text, $${offset + 2}::jsonb)`;
+            });
+            await pool.query(
+              `UPDATE freight_movements SET data = v.data, updated_date = NOW()
+               FROM (VALUES ${placeholders.join(",")}) AS v(id, data)
+               WHERE freight_movements.id = v.id`,
+              values
+            );
+          }
+        }
+
+        // Fire notifications in background
+        Promise.all(maturedNotifs.map((n) => createNotification(n).catch(() => undefined))).catch(() => undefined);
+
+        // Check existing MaturedIndents in DB to prevent duplicate rows in matured_indents table
+        const existingIndentsInDb = keysToMatch.length
+          ? await pool.query(
+              `SELECT id, data, business_key FROM matured_indents WHERE business_key = ANY($1::text[]) OR (data->>'business_key') = ANY($1::text[])`,
+              [keysToMatch]
+            )
+          : { rows: [] };
+
+        const existingIndentMap = new Map();
+        existingIndentsInDb.rows.forEach((row) => {
+          const bKey = row.business_key || row.data?.business_key || generateBusinessKey(row.data, "MaturedIndent");
+          existingIndentMap.set(bKey, row);
+        });
+
+        const indentsToInsert = [];
+        for (const record of aggregatedMatured) {
+          const key = record.business_key || generateBusinessKey(record, "MaturedIndent");
+          const existingIndent = existingIndentMap.get(key);
+          if (existingIndent) {
+            duplicatesFound++;
+          } else {
+            record.business_key = key;
+            record.unique_rake_code = formatUniqueRakeCode(key);
+            indentsToInsert.push(record);
+            newIndentsAdded++;
+          }
+        }
+
+        if (indentsToInsert.length > 0) {
+          await createRecords("MaturedIndent", indentsToInsert);
+          insertedRecords = indentsToInsert.length;
+        } else {
+          insertedRecords = 0;
+        }
+
         await invalidateCachePrefix("movement:");
       }
 
@@ -1512,6 +1825,8 @@ app.post(
             ? "Partial"
             : "Completed"
           : "Failed";
+      const { version_number } = await getNextUploadVersion(fileType, selectedZone).catch(() => ({ version_number: 1 }));
+
       const logEntry = {
         batch_id: batchId,
         original_file_name: fileName,
@@ -1525,11 +1840,13 @@ app.post(
         records_parsed: recordsParsed,
         records_valid: recordsValid,
         records_failed: recordsFailed,
+        version_number,
         totalSheets,
         processedSheets,
         failedSheets,
         insertedRecords,
         updatedRecords,
+        skippedRecords: Math.max(0, recordsValid - (insertedRecords + updatedRecords)),
         new_indents_added: newIndentsAdded,
         supplied_status_updates: suppliedStatusUpdates,
         matured_status_updates: maturedStatusUpdates,
@@ -1543,23 +1860,34 @@ app.post(
       };
 
       const savedUploadLog = await createRecord("UploadLog", logEntry);
-      await pool.end();
-      const matching = await runMatchingEngine({
+
+      // Trigger matching engine in the background asynchronously so the HTTP request completes immediately
+      runMatchingEngine({
         requestedBy: req.auth?.username || "Admin",
         trigger: fileType === "ODR" ? "odr-upload" : "matured-upload",
-      });
-      missingODRs = matching.unmatched_matured;
-      logEntry.missing_odrs_found = missingODRs;
-      await updateRecord("UploadLog", savedUploadLog.id, {
-        missing_odrs_found: missingODRs,
-        matching,
-      });
+      })
+        .then(async (matching) => {
+          const mMissing = matching.unmatched_matured || 0;
+          let mMatured = maturedStatusUpdates;
+          let mUpdated = updatedRecords;
+          if (fileType === "MaturedIndent" && matching.matched > 0) {
+            mMatured += Number(matching.matched || 0);
+            mUpdated += Number(matching.matched || 0);
+          }
+          await updateRecord("UploadLog", savedUploadLog.id, {
+            missing_odrs_found: mMissing,
+            matured_status_updates: mMatured,
+            updatedRecords: mUpdated,
+            matching,
+          }).catch((e) => console.error("[Upload] UploadLog update error:", e?.message));
+        })
+        .catch((e) => console.error("[Upload] Background matching engine error:", e?.message));
 
       return res.status(201).json({
         success: true,
         ...logEntry,
-        matching,
-        message: `Successfully processed ${processedSheets}/${totalSheets} sheet(s). Total valid records: ${parsedRecords.length}.`,
+        matching: { status: "Processing in background" },
+        message: `Successfully processed ${processedSheets}/${totalSheets} sheet(s). Total valid records: ${parsedRecords.length}. Matching engine is running in background.`,
         storage: getStorageStatus(),
       });
     } catch (error) {
@@ -1760,11 +2088,7 @@ app.post("/api/admin/comparison/:id/unmatch", requireAuth, requireRoles(ADMIN_RO
 
 app.post("/api/admin/comparison/reset-manual-decisions", requireAuth, requireRoles(ADMIN_ROLES), async (req, res, next) => {
   try {
-    const { Pool } = await import("pg");
-    const databaseUrl = process.env.DATABASE_URL || "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-    const pool = new Pool({ connectionString: databaseUrl });
     const count = await pool.query("SELECT COUNT(*)::int affected FROM odr_matured_matches WHERE manual_locked=TRUE");
-    await pool.end();
     const matching = await runMatchingEngine({
       requestedBy: req.auth?.username || "Admin",
       trigger: "reset-manual-decisions",
@@ -1887,12 +2211,6 @@ app.post(
       const type = entityType || dateType || "movement";
       const tableName =
         type === "indent" ? "matured_indents" : "freight_movements";
-
-      const { Pool } = await import("pg");
-      const databaseUrl =
-        process.env.DATABASE_URL ||
-        "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-      const pool = new Pool({ connectionString: databaseUrl });
 
       const where = [];
       const params = [];
@@ -2073,7 +2391,6 @@ app.post(
         }
 
         const result = await pool.query(sql, finalParams);
-        await pool.end();
 
         // freight_movements stores all freight fields inside `data JSONB`.
         // Raw result.rows have movement_type etc inside row.data, not top-level.
@@ -2111,7 +2428,6 @@ app.post(
       const finalParams = [...params, limit, offset];
 
       const result = await pool.query(sql, finalParams);
-      await pool.end();
 
       const mapRow2 = (row) => ({
         ...(row.data && typeof row.data === 'object' ? row.data : {}),
@@ -2196,7 +2512,9 @@ function movementQueryFromRequest(req) {
     direction: req.query.direction,
     zone: multi("zone"), division: multi("division"), state: multi("state"),
     district: multi("district"), station: multi("station"), commodity: multi("commodity"),
-    rake: multi("rake"), company: multi("company"), search: req.query.search,
+    rake: multi("rake"), company: multi("company"), cnsr: multi("cnsr"), cnsg: multi("cnsg"),
+    search: req.query.search,
+    status: req.query.status,
     page: req.query.page, limit: req.query.limit,
   };
 }
@@ -2217,11 +2535,18 @@ app.get("/api/fois-reports", requireAuth, async (req, res, next) => {
   try {
     res.json(await pagedFoisReports({
       page: req.query.page, limit: req.query.limit, search: req.query.search,
+      zone: req.query.zone ? String(req.query.zone).split(",") : [],
       division: req.query.division ? String(req.query.division).split(",") : [],
+      state: req.query.state ? String(req.query.state).split(",") : [],
+      district: req.query.district ? String(req.query.district).split(",") : [],
       stationFrom: req.query.stationFrom ? String(req.query.stationFrom).split(",") : [],
       commodity: req.query.commodity ? String(req.query.commodity).split(",") : [],
+      rake: req.query.rake ? String(req.query.rake).split(",") : [],
+      cnsr: req.query.cnsr ? String(req.query.cnsr).split(",") : [],
+      cnsg: req.query.cnsg ? String(req.query.cnsg).split(",") : [],
       destination: req.query.destination ? String(req.query.destination).split(",") : [],
       unmappedOnly: req.query.unmappedOnly === "true",
+      status: req.query.status,
     }));
   } catch (error) { next(error); }
 });
@@ -2465,19 +2790,11 @@ app.post(
         .json({ error: "State name and code are required" });
     }
 
-    let seederPool = null;
     try {
-      const { Pool } = await import("pg");
-      const databaseUrl =
-        process.env.DATABASE_URL ||
-        "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-
-      seederPool = new Pool({ connectionString: databaseUrl });
-
       const normalizedCode = String(code).trim().toUpperCase();
       const normalizedName = String(name).trim();
 
-      const checkExist = await seederPool.query(
+      const checkExist = await pool.query(
         "SELECT id FROM state_master WHERE UPPER(code) = $1 LIMIT 1",
         [normalizedCode]
       );
@@ -2488,7 +2805,7 @@ app.post(
           .json({ error: "State with this code already exists" });
       }
 
-      const maxRes = await seederPool.query("SELECT id FROM state_master");
+      const maxRes = await pool.query("SELECT id FROM state_master");
       let nextId = 1;
       if (maxRes.rows.length > 0) {
         const ids = maxRes.rows
@@ -2499,7 +2816,7 @@ app.post(
 
       // NOTE: verified schema from container: state_master has (id TEXT, code TEXT, name TEXT, parent_code TEXT?, active BOOLEAN?)
       // mastersController elsewhere uses (id, code, name, active, parent_code). Here we insert minimal columns.
-      const result = await seederPool.query(
+      const result = await pool.query(
         "INSERT INTO state_master (id, name, code, active, parent_code) VALUES ($1, $2, $3, TRUE, NULL) RETURNING *",
         [String(nextId), normalizedName, normalizedCode]
       );
@@ -2519,14 +2836,6 @@ app.post(
         })(),
       });
       return res.status(500).json({ error: "Internal Server Error" });
-    } finally {
-      if (seederPool) {
-        try {
-          await seederPool.end();
-        } catch {
-          // ignore
-        }
-      }
     }
   }
 );
@@ -2548,7 +2857,6 @@ app.post(
     }
 
 
-    let seederPool = null;
     const debug = {
       payload: req.body,
       checkExist: { sql: null, params: null },
@@ -2564,20 +2872,13 @@ app.post(
     };
 
     try {
-      const { Pool } = await import("pg");
-      const databaseUrl =
-        process.env.DATABASE_URL ||
-        "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-
-      seederPool = new Pool({ connectionString: databaseUrl });
-
       const normalizedName = String(name).trim();
       const calculatedCode = code
         ? String(code).trim().toUpperCase()
         : normalizedName.slice(0, 3).toUpperCase();
 
       // Resolve state reference column: state_id/stateId/state or just accept whatever exists.
-      const distSample = await seederPool.query(
+      const distSample = await pool.query(
         "SELECT * FROM district_master LIMIT 0"
       );
       const distCols = distSample.fields.map((f) => f.name);
@@ -2592,7 +2893,7 @@ app.post(
       debug.checkExist.params = [normalizedName.toLowerCase(), parent_code];
 
 
-      const checkExist = await seederPool.query(
+      const checkExist = await pool.query(
         debug.checkExist.sql,
         debug.checkExist.params
       );
@@ -2603,7 +2904,7 @@ app.post(
           .json({ error: "District already exists in this state" });
       }
 
-      const maxRes = await seederPool.query("SELECT id FROM district_master");
+      const maxRes = await pool.query("SELECT id FROM district_master");
       let nextId = 1;
       if (maxRes.rows.length > 0) {
         const ids = maxRes.rows
@@ -2623,7 +2924,7 @@ app.post(
       ];
 
 
-      const result = await seederPool.query(
+      const result = await pool.query(
         debug.insert.sql,
         debug.insert.params
       );
@@ -2648,14 +2949,6 @@ app.post(
       });
 
       return res.status(500).json({ error: "Internal Server Error" });
-    } finally {
-      if (seederPool) {
-        try {
-          await seederPool.end();
-        } catch {
-          // ignore
-        }
-      }
     }
   }
 );
@@ -2717,20 +3010,13 @@ app.post(
         .json({ error: "Code and Full Name are strictly required" });
     }
 
-    let seederPool = null;
     try {
-      const { Pool } = await import("pg");
-      const databaseUrl =
-        process.env.DATABASE_URL ||
-        "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-
-      seederPool = new Pool({ connectionString: databaseUrl });
-      await ensureCommodityCatalogTable(seederPool);
+      await ensureCommodityCatalogTable(pool);
 
       const normalizedCode = String(code).trim().toUpperCase();
       const normalizedName = String(full_name).trim();
 
-      const checkExist = await seederPool.query(
+      const checkExist = await pool.query(
         "SELECT id FROM commodity_master WHERE UPPER(code) = $1 AND type = $2 LIMIT 1",
         [normalizedCode, type]
       );
@@ -2741,7 +3027,7 @@ app.post(
           .json({ error: "Code already registered for this type" });
       }
 
-      const maxRes = await seederPool.query("SELECT id FROM commodity_master");
+      const maxRes = await pool.query("SELECT id FROM commodity_master");
       let nextId = 1;
       if (maxRes.rows.length > 0) {
         const ids = maxRes.rows
@@ -2750,7 +3036,7 @@ app.post(
         if (ids.length > 0) nextId = Math.max(...ids) + 1;
       }
 
-      const result = await seederPool.query(
+      const result = await pool.query(
         `INSERT INTO commodity_master
         (id, code, name, commodity_code, commodity_name, type, commodity_group_code, commodity_group_name, is_active, created_at, updated_at)
        VALUES
@@ -2784,14 +3070,6 @@ app.post(
         payload_preview: JSON.stringify(req.body),
       });
       return res.status(500).json({ error: "Internal Server Error" });
-    } finally {
-      if (seederPool) {
-        try {
-          await seederPool.end();
-        } catch {
-          // ignore
-        }
-      }
     }
   }
 );
@@ -2836,16 +3114,7 @@ function resolveMasterKey(master) {
 }
 
 async function withCatalogPool(callback) {
-  const { Pool } = await import("pg");
-  const databaseUrl =
-    process.env.DATABASE_URL ||
-    "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-  const pool = new Pool({ connectionString: databaseUrl });
-  try {
-    return await callback(pool);
-  } finally {
-    await pool.end().catch(() => undefined);
-  }
+  return callback(pool);
 }
 
 async function ensureCatalogTable(pool, config) {
@@ -3365,11 +3634,6 @@ await ensureSuperAdminExists(SUPER_ADMIN);
 await autoSeedMastersIfEmpty();
 
 async function autoSeedMastersIfEmpty() {
-  const { Pool } = await import("pg");
-  const databaseUrl =
-    process.env.DATABASE_URL ||
-    "postgresql://fois_user:fois_password@localhost:5432/fois_db";
-  const pool = new Pool({ connectionString: databaseUrl });
   try {
     await ensureGenericMasterTable(pool, "state_master");
     await ensureGenericMasterTable(pool, "district_master");
@@ -3389,8 +3653,6 @@ async function autoSeedMastersIfEmpty() {
     }
   } catch (error) {
     console.error("[Startup] auto-seed masters failed:", error?.message);
-  } finally {
-    await pool.end().catch(() => undefined);
   }
 }
 

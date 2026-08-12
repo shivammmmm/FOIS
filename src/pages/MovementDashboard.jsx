@@ -32,7 +32,7 @@ export default function MovementDashboard({ direction = "Inward" }) {
   const [loadError, setLoadError] = useState("");
   const [hierarchy, setHierarchy] = useState(null);
   const { getDivisionName } = useMasterHierarchy();
-  const [filters, setFilters] = useState({ zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] });
+  const [filters, setFilters] = useState({ zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], cnsr: [], cnsg: [] });
   const isInward = direction === "Inward";
   const Icon = isInward ? ArrowDownToLine : ArrowUpFromLine;
   const accent = isInward ? "text-emerald-500" : "text-blue-500";
@@ -59,7 +59,7 @@ export default function MovementDashboard({ direction = "Inward" }) {
     return () => controller.abort();
   }, [direction, filters]);
 
-  const sourceOptions = summary?.options || { zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] };
+  const sourceOptions = summary?.options || { zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], cnsr: [], cnsg: [] };
   const scoped = buildFilterHierarchyOptions(hierarchy || {}, { zone: filters.zone, division: filters.division, state: filters.state, district: filters.district, commodity: filters.commodity });
   const preferHierarchy = (hierarchyOptions, fallbackOptions) =>
     hierarchyOptions?.length ? hierarchyOptions : (fallbackOptions || []);
@@ -105,12 +105,12 @@ export default function MovementDashboard({ direction = "Inward" }) {
       </div>
 
       <div className="flex flex-wrap gap-2 rounded-xl border border-border bg-card p-3">
-        {[["zone","Zone"],["division","Division"],["state","State"],["district","District"],["station","Station"],["commodity","Commodity"],["rake","Rake Commodity"],["company","Company"]].map(([key, label]) => {
+        {[["zone","Zone"],["division","Division"],["state","State"],["district","District"],["station","Station"],["commodity","Commodity"],["rake","Rake Commodity"],["cnsr","Consignor (CNSR)"],["cnsg","Consignee (CNSG)"]].map(([key, label]) => {
           const isCoreHierarchyFilter = ["state", "district", "station", "commodity", "rake"].includes(key);
           if (!isCoreHierarchyFilter && !options[key]?.length) return null;
           return <MultiSelectFilter key={key} label={label} selected={filters[key]} options={options[key] || []} disabled={key === "district" && !filters.state.length} placeholder={key === "district" && !filters.state.length ? "Select State first" : `All ${label}`} onChange={(value) => setFilters((prev) => key === 'zone' ? { ...prev, zone: value, division: [], station: [] } : key === 'division' ? { ...prev, division: value, station: [] } : key === 'state' ? { ...prev, state: value, district: [], station: [] } : key === 'district' ? { ...prev, district: value, station: [] } : { ...prev, [key]: value })} />;
         })}
-        <button type="button" onClick={() => setFilters({ zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], company: [] })} className="rounded-lg border border-border px-3 py-2 text-xs">Clear Filters</button>
+        <button type="button" onClick={() => setFilters({ zone: [], division: [], state: [], district: [], station: [], commodity: [], rake: [], cnsr: [], cnsg: [] })} className="rounded-lg border border-border px-3 py-2 text-xs">Clear Filters</button>
       </div>
 
       {loadError && (

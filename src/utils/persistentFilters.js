@@ -45,6 +45,6 @@ export function optionMatches(selectedValues, value) {
 export function hasSavedFilterValues(filters = {}) {
   return Object.values(filters).some((value) => {
     if (Array.isArray(value)) return value.length > 0;
-    return Boolean(value && value !== "All");
+    return Boolean(value && value !== "All" && value !== "all");
   });
 }

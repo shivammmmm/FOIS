@@ -43,26 +43,28 @@ function isNumericCode(value) {
   return s.length > 0 && /^\d+(\.\d+)?$/.test(s);
 }
 
-export function formatUniqueRakeCode(indentNo, dateStr, timeStr, seqIndex = 1) {
-  const no = String(indentNo || "-").trim();
-  let formattedDate = "-";
-  if (dateStr) {
-    const s = String(dateStr).trim();
-    // Handles formats like 05-Aug-2026, 2026-08-05, etc.
-    const d = new Date(s);
-    if (!isNaN(d.getTime())) {
-      const day = d.getDate();
-      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-      const month = months[d.getMonth()];
-      const year = String(d.getFullYear()).slice(-2);
-      formattedDate = `${day}-${month}-${year}`;
-    } else {
-      formattedDate = s;
-    }
-  }
-  let formattedTime = String(timeStr || "12:00 AM").trim();
-  const indexPadded = String(seqIndex).padStart(2, "0");
-  return `Rake/${indexPadded} (No.${no} | ${formattedDate} | ${formattedTime})`;
+function formatCompactDate(dateStr) {
+  const match = String(dateStr || "").trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return "";
+  const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+  const [, year, month, day] = match;
+  const monthIndex = Number(month) - 1;
+  if (monthIndex < 0 || monthIndex > 11) return "";
+  return `${day}${months[monthIndex]}${year.slice(-2)}`;
+}
+
+/**
+ * Builds the user-facing rack ID directly from the record's business_key
+ * (zone|division|station_from|no|date|time), so the same physical rack shows
+ * the identical, searchable ID whether it was surfaced via the ODR upload or
+ * the later Matured Indent upload.
+ */
+export function formatUniqueRakeCode(businessKey) {
+  const [, division = "", stationFrom = "", no = "", dateStr = ""] = String(businessKey || "").split("|");
+  const datePart = formatCompactDate(dateStr);
+  const stationPart = stationFrom || division || "";
+  const noPart = no || "-";
+  return `RAKE-${noPart}${stationPart ? `/${stationPart}` : ""}${datePart ? `/${datePart}` : ""}`;
 }
 
 /**
@@ -77,7 +79,7 @@ export function parseODRRow(row, batchId, seqIndex = 1) {
   const movementType = detectMovementType(fields.pc, fields.indentType, fields.tt);
   const status = detectStatus({
     expectedLoadingDate: fields.expectedLoadingDate,
-    suppliedTime: fields.suppliedTime || fields.suppliedUnits,
+    suppliedTime: fields.suppliedTime || "",
     movementType,
   });
 
@@ -85,25 +87,27 @@ export function parseODRRow(row, batchId, seqIndex = 1) {
   const isWagon = isWagonType(rawRakeCmdt);
   const wagonType = fields.wagonType || (isWagon ? rawRakeCmdt : "");
 
-  return {
-    unique_rake_code: formatUniqueRakeCode(fields.indentNo, fields.indentDate, fields.indentTime, seqIndex),
-    odr_number: fields.indentNo,
-    division: fields.division,
-    station_from: fields.stationFrom,
-    station_to: fields.destination,
-    company: fields.cnsr,
-    company_code: fields.cnsr,
-    cnsg: fields.cnsg || "-",
-    commodity: fields.commodity,
-    product: fields.product,
-    product_code: fields.product,
-    rake_type: fields.product,
-    wagon_type: wagonType,
-    rake_cmdt: !isWagon ? rawRakeCmdt : "",
-    rake_commodity_code: !isWagon ? rawRakeCmdt : "",
-    wagons: parseInt(fields.suppliedUnits, 10) || parseInt(fields.indented8w, 10) || parseInt(fields.indentedUnits, 10) || 0,
-    indented_units: parseInt(fields.indentedUnits, 10) || parseInt(fields.indented8w, 10) || 0,
-    supplied_units: parseInt(fields.suppliedUnits, 10) || 0,
+    const rawIndented = parseInt(fields.indentedUnits, 10) || parseInt(fields.indented8w, 10) || parseInt(fields.otsgUnits, 10) || parseInt(fields.otsg8w, 10) || 0;
+    const rawSupplied = parseInt(fields.suppliedUnits, 10) || 0;
+
+    return {
+      odr_number: fields.indentNo,
+      division: fields.division,
+      station_from: fields.stationFrom,
+      station_to: fields.destination,
+      company: fields.cnsr,
+      company_code: fields.cnsr,
+      cnsg: fields.cnsg || "-",
+      commodity: fields.commodity,
+      product: fields.product,
+      product_code: fields.product,
+      rake_type: fields.product,
+      wagon_type: wagonType,
+      rake_cmdt: !isWagon ? rawRakeCmdt : "",
+      rake_commodity_code: !isWagon ? rawRakeCmdt : "",
+      wagons: rawIndented,
+      indented_units: rawIndented,
+      supplied_units: rawSupplied,
     supplied_time: fields.suppliedTime || "",
     indent_time: fields.indentTime || "",
     arrival_date: normalizeDate(fields.expectedLoadingDate),
@@ -128,9 +132,9 @@ export function parseIndentRow(row, batchId, seqIndex = 1) {
   const rawRakeCmdt = fields.rakeCmdt || "";
   const isWagon = isWagonType(rawRakeCmdt);
   const wagonType = fields.wagonType || (isWagon ? rawRakeCmdt : "");
+  const metWithDateVal = fields.metWithDate ? normalizeDate(fields.metWithDate) : "";
 
   return {
-    unique_rake_code: formatUniqueRakeCode(fields.indentNo, fields.indentDate, fields.indentTime, seqIndex),
     indent_number: fields.indentNo,
     division: fields.division,
     station_from: fields.stationFrom,
@@ -147,11 +151,16 @@ export function parseIndentRow(row, batchId, seqIndex = 1) {
     rake_commodity_code: !isWagon ? rawRakeCmdt : "",
     wagons_demanded: parseInt(fields.indented8w, 10) || parseInt(fields.indentedUnits, 10) || 0,
     indent_date: normalizeDate(fields.indentDate),
-    maturity_date: normalizeDate(fields.expectedLoadingDate),
+    maturity_date: metWithDateVal || normalizeDate(fields.expectedLoadingDate),
+    met_with_date: metWithDateVal,
     odr_matched: false,
     matched_odr_number: '',
     upload_batch_id: batchId,
-    raw_data: buildFoisRawData(fields)
+    raw_data: {
+      ...buildFoisRawData(fields),
+      'MET WITH DATE': fields.metWithDate || "",
+      met_with_date: metWithDateVal,
+    }
   };
 }
 
@@ -217,15 +226,18 @@ function getFoisFields(row) {
       'STOCK TYPE',
       'WAGON',
       'WAGON CODE',
+      'TYPE',
+      'INDENTED TYPE',
     ]).toUpperCase(),
     destination: cell(row, 'DSTN').toUpperCase(),
     indentType: firstCell(row, ['TYPE', 'INDENTED TYPE']).toUpperCase(),
-    indentedUnits: firstCell(row, ['INDENTED UNTS', 'INDENTED UNITS']),
+    indentedUnits: firstCell(row, ['INDENTED UNTS', 'INDENTED UNITS', 'INDENTED_UNITS']),
     indented8w: firstCell(row, ['INDENTED 8W', '8W']),
     otsgUnits: cell(row, 'OTSG UNTS'),
     otsg8w: cell(row, 'OTSG 8W'),
-    suppliedUnits: cell(row, 'SUPPLIED UNTS'),
-    suppliedTime: firstCell(row, ['SUPPLIED TIME', 'METWITH DATE']),
+    suppliedUnits: firstCell(row, ['SUPPLIED UNTS', 'SUPPLIED UNITS', 'SUPPLIED_UNITS', 'SUPPLIED UNTS.']),
+    suppliedTime: firstCell(row, ['SUPPLIED TIME', 'SUPPLIED DATE', 'SUPPLIED_TIME']),
+    metWithDate: firstCell(row, ['MET WITH DATE', 'METWITHDATE', 'METWITH DATE', 'MET WITH DATE.', 'METWITH_DATE', 'MET-WITH-DATE']),
   };
 }
 
@@ -305,17 +317,19 @@ function detectMovementType(category, type, flag2) {
   return 'Unknown';
 }
 
-function detectStatus({ expectedLoadingDate, suppliedTime, movementType } = {}) {
-  if (suppliedTime) {
-    return movementType === 'Outward' ? 'Departed' : 'Arrived';
+function detectStatus({ expectedLoadingDate, suppliedTime, suppliedUnits, movementType } = {}) {
+  const hasUnits = Boolean(suppliedUnits && Number(suppliedUnits) > 0);
+  const hasTime = Boolean(suppliedTime && String(suppliedTime).trim() !== '' && String(suppliedTime).trim() !== '-');
+  if (hasUnits || hasTime) {
+    return 'Supplied';
   }
-  if (!expectedLoadingDate) return 'Pending';
+  if (!expectedLoadingDate) return 'Placed';
   const d = normalizeDate(expectedLoadingDate);
-  if (!d) return 'Pending';
+  if (!d) return 'Placed';
   const expected = new Date(d);
   const now = new Date();
   if (expected > now) return 'In Transit';
-  return 'Delayed';
+  return 'Placed';
 }
 
 function normalizeDate(val) {

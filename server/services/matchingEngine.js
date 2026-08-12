@@ -1,28 +1,23 @@
-import crypto from "crypto";
-import { Pool } from "pg";
+import { pool } from "../db/pool.js";
 import { createNotification } from "../notifications/service.js";
 import { matchedLifecycleStatus } from "./lifecycleStatus.js";
-
-const DATABASE_URL =
-  process.env.DATABASE_URL ||
-  "postgresql://fois_user:fois_password@localhost:5432/fois_db";
+import { generateBusinessKey } from "./incrementalUploadEngine.js";
 
 export const MATCH_FIELDS = [
-  "number",
+  "zone",
   "division",
   "station_from",
-  "station_to",
-  "company",
-  "commodity",
+  "number",
   "demand_date",
+  "demand_time",
 ];
 
-const CORE_FIELDS = MATCH_FIELDS.slice(0, 5);
+const CORE_FIELDS = MATCH_FIELDS;
 const MATCH_LOCK_ID = 70422119;
 export const DEFAULT_RULES = {
   version: "3.0",
-  required_exact_fields: ["division", "station_from", "station_to", "company", "commodity"],
-  strong_fields: ["number", "demand_date", "cnsg", "rake_cmdt"],
+  required_exact_fields: ["zone", "division", "station_from", "number"],
+  strong_fields: ["number", "demand_date", "demand_time", "cnsg", "rake_cmdt"],
   verification_fields: ["indented_units"],
   date_tolerance_days: 7,
   unit_tolerance: 0,
@@ -46,26 +41,29 @@ function normalizeDate(value) {
 
 function businessRecord(row, type) {
   const data = row.data || {};
+  const raw = data.raw_data || {};
   return {
     id: String(row.id),
     raw: data,
-    number: normalize(type === "odr" ? data.odr_number : data.indent_number),
-    division: normalize(data.division),
-    station_from: normalize(data.station_from),
+    zone: normalize(data.zone || data.from_zone || raw.zone || raw.ZONE || ""),
+    division: normalize(data.division || data.from_division || raw.division || raw.DVSN || ""),
+    station_from: normalize(data.station_from || data.stationFrom || raw['STTN FROM'] || ""),
+    number: normalize(type === "odr" ? data.odr_number : (data.indent_number || data.odr_number)),
+    demand_date: normalizeDate(type === "odr" ? (data.departure_date || data.indent_date) : (data.indent_date || data.departure_date)),
+    demand_time: normalize(data.indent_time || data.demand_time || raw['TIME'] || raw['DEMAND TIME'] || raw['Time'] || ""),
     station_to: normalize(data.station_to),
     company: normalize(data.company || data.company_code),
     commodity: normalize(data.commodity || data.commodity_code),
     cnsg: normalize(data.cnsg || data.raw_data?.cnsg),
     rake_cmdt: normalize(data.rake_cmdt || data.rake_commodity_code || data.raw_data?.["Rake CMDT"]),
-    demand_date: normalizeDate(
-      type === "odr" ? data.departure_date : data.indent_date
-    ),
     batch: String(data.upload_batch_id || data.batch_id || ""),
+    business_key: row.business_key || row.data?.business_key || generateBusinessKey(data, type === "odr" ? "ODR" : "MaturedIndent"),
   };
 }
 
 function keyOf(record, fields = MATCH_FIELDS) {
-  return fields.map((field) => record[field]).join("\u001f");
+  if (record.business_key) return record.business_key;
+  return fields.map((field) => record[field]).join("|");
 }
 
 function groupBy(records, keyBuilder) {
@@ -129,8 +127,8 @@ function createResult({ odr = null, matured = null, status, confidence = 0, meth
 }
 
 export async function ensureMatchingSchema(clientOrPool = null) {
-  const ownsPool = !clientOrPool;
-  const db = clientOrPool || new Pool({ connectionString: DATABASE_URL });
+  const ownsPool = false;
+  const db = clientOrPool || pool;
   try {
     await db.query(`
       CREATE TABLE IF NOT EXISTS odr_matured_matches (
@@ -260,7 +258,6 @@ export async function runMatchingEngine({
 } = {}) {
   const startedAt = Date.now();
   const runId = crypto.randomUUID();
-  const pool = new Pool({ connectionString: DATABASE_URL });
   const client = await pool.connect();
   let notificationEvents = [];
   try {
@@ -368,10 +365,16 @@ export async function runMatchingEngine({
 
     await client.query("DELETE FROM odr_matured_matches");
     await insertResults(client, results);
+    // NOTE: this deliberately does NOT touch fm.data.status. The exact business-key
+    // match performed inline during upload (server/index.js) is the single source of
+    // truth for the user-facing Indent -> Supplied -> Matured lifecycle status, driven
+    // by presence of MET WITH DATE. match_status/odr_matched are this engine's own
+    // fuzzy-matching verdict, used only by the admin Comparison view.
     await client.query(`
       UPDATE freight_movements fm
-      SET data = jsonb_set(jsonb_set(fm.data, '{match_status}', to_jsonb(m.status), true),
-                           '{odr_matched}', to_jsonb(m.status IN ('Matched','Partial')), true),
+      SET data = jsonb_set(
+                   jsonb_set(fm.data, '{match_status}', to_jsonb(m.status), true),
+                   '{odr_matched}', to_jsonb(m.status IN ('Matched','Partial','Completed')), true),
           updated_date = NOW()
       FROM odr_matured_matches m WHERE m.odr_id = fm.id
     `);
@@ -449,8 +452,9 @@ export async function runMatchingEngine({
         const dispatchDate = raw.departure_date || raw.demand_date || new Date().toISOString().split("T")[0];
 
         const notifType = "RakeDispatched";
-        const title = `🚆 Rake Dispatched: #${raw.odr_number || odr?.number || ""}`;
-        const message = `📍 Station: ${fromStation}\nDestination: ${toStation}\nCommodity: ${commodity}\nDispatch Date: ${dispatchDate}`;
+        const rakeId = raw.unique_rake_code || `#${raw.odr_number || odr?.number || ""}`;
+        const title = `🚆 Rake Dispatched: ${rakeId}`;
+        const message = `🔖 Rake ID: ${rakeId}\n📍 Station: ${fromStation}\nDestination: ${toStation}\nCommodity: ${commodity}\nDispatch Date: ${dispatchDate}`;
 
         await createNotification({
           movement_reference: `MATCH:${item.odr_id}:${item.matured_id || "REVIEW"}`,
@@ -478,12 +482,10 @@ export async function runMatchingEngine({
     throw error;
   } finally {
     client.release();
-    await pool.end();
   }
 }
 
 export async function getMatchingSummary() {
-  const pool = new Pool({ connectionString: DATABASE_URL });
   try {
     await ensureMatchingSchema(pool);
     const result = await pool.query(`
@@ -505,39 +507,33 @@ export async function getMatchingSummary() {
     `);
     return result.rows[0];
   } finally {
-    await pool.end();
   }
 }
 
 export async function listMatchingResults({ page = 1, limit = 50, status = "", search = "" } = {}) {
-  const pool = new Pool({ connectionString: DATABASE_URL });
-  try {
-    await ensureMatchingSchema(pool);
-    const params = [];
-    const where = ["m.odr_id IS NOT NULL"];
-    if (status) { params.push(status); where.push(`m.status = $${params.length}`); }
-    if (search) {
-      params.push(`%${search}%`);
-      where.push(`(fm.data->>'odr_number' ILIKE $${params.length} OR fm.data->>'station_from' ILIKE $${params.length} OR fm.data->>'station_to' ILIKE $${params.length} OR fm.data->>'company' ILIKE $${params.length})`);
-    }
-    const count = await pool.query(
-      `SELECT COUNT(*)::int AS total FROM odr_matured_matches m LEFT JOIN freight_movements fm ON fm.id=m.odr_id WHERE ${where.join(" AND ")}`,
-      params
-    );
-    const offset = (Math.max(Number(page), 1) - 1) * Math.min(Math.max(Number(limit), 1), 200);
-    const safeLimit = Math.min(Math.max(Number(limit), 1), 200);
-    params.push(safeLimit, offset);
-    const rows = await pool.query(`
-      SELECT m.*, fm.data AS odr, mi.data AS matured
-      FROM odr_matured_matches m
-      LEFT JOIN freight_movements fm ON fm.id=m.odr_id
-      LEFT JOIN matured_indents mi ON mi.id=m.matured_id
-      WHERE ${where.join(" AND ")}
-      ORDER BY m.created_at DESC, m.match_id
-      LIMIT $${params.length - 1} OFFSET $${params.length}
-    `, params);
-    return { items: rows.rows, total: count.rows[0].total, page: Math.max(Number(page), 1), limit: safeLimit };
-  } finally {
-    await pool.end();
+  await ensureMatchingSchema(pool);
+  const params = [];
+  const where = ["m.odr_id IS NOT NULL"];
+  if (status) { params.push(status); where.push(`m.status = $${params.length}`); }
+  if (search) {
+    params.push(`%${search}%`);
+    where.push(`(fm.data->>'odr_number' ILIKE $${params.length} OR fm.data->>'station_from' ILIKE $${params.length} OR fm.data->>'station_to' ILIKE $${params.length} OR fm.data->>'company' ILIKE $${params.length})`);
   }
+  const count = await pool.query(
+    `SELECT COUNT(*)::int AS total FROM odr_matured_matches m LEFT JOIN freight_movements fm ON fm.id=m.odr_id WHERE ${where.join(" AND ")}`,
+    params
+  );
+  const offset = (Math.max(Number(page), 1) - 1) * Math.min(Math.max(Number(limit), 1), 200);
+  const safeLimit = Math.min(Math.max(Number(limit), 1), 200);
+  params.push(safeLimit, offset);
+  const rows = await pool.query(`
+    SELECT m.*, fm.data AS odr, mi.data AS matured
+    FROM odr_matured_matches m
+    LEFT JOIN freight_movements fm ON fm.id=m.odr_id
+    LEFT JOIN matured_indents mi ON mi.id=m.matured_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY m.created_at DESC, m.match_id
+    LIMIT $${params.length - 1} OFFSET $${params.length}
+  `, params);
+  return { items: rows.rows, total: count.rows[0].total, page: Math.max(Number(page), 1), limit: safeLimit };
 }

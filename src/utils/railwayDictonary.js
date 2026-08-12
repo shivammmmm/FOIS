@@ -288,8 +288,6 @@ export const STATION_NAMES = {
   // AP / Telangana
   KDPM: "Khurda Road–Puri Main",
   MRGA: "Muragachha",
-  KZJ: "Kazipet Junction",
-  WL: "Warangal",
   MBNR: "Mahbubnagar",
   PAK: "Pakala Junction",
   GY: "Giddalur",

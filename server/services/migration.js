@@ -21,13 +21,17 @@ export async function runIncrementalUploadMigration(pool, activeStorage, listRec
         }
         await pool.query(`CREATE INDEX IF NOT EXISTS ${tableName}_business_key_idx ON ${tableName} (business_key)`);
 
-        // Fetch unmigrated records
-        const unmigrated = await pool.query(
-          `SELECT id, data FROM ${tableName} WHERE business_key IS NULL OR (data->>'business_key') IS NULL LIMIT 2000`
-        );
+        let totalBackfilled = 0;
 
-        if (unmigrated.rows.length > 0) {
-          console.info(`[Migration] Backfilling ${unmigrated.rows.length} records in ${tableName}...`);
+        while (true) {
+          // Fetch unmigrated records
+          const unmigrated = await pool.query(
+            `SELECT id, data FROM ${tableName} WHERE business_key IS NULL OR (data->>'business_key') IS NULL LIMIT 2000`
+          );
+
+          if (unmigrated.rows.length === 0) break;
+
+          console.info(`[Migration] Backfilling batch of ${unmigrated.rows.length} records in ${tableName}...`);
           for (const row of unmigrated.rows) {
             const data = typeof row.data === "object" && row.data ? row.data : {};
             const businessKey = generateBusinessKey(data, fileType);
@@ -51,7 +55,11 @@ export async function runIncrementalUploadMigration(pool, activeStorage, listRec
               [businessKey, recordHash, updatedData.first_seen_upload, updatedData.last_seen_upload, "MIGRATED", "ACTIVE", updatedData, String(row.id)]
             );
           }
-          console.info(`[Migration] Backfilled ${unmigrated.rows.length} records in ${tableName}.`);
+          totalBackfilled += unmigrated.rows.length;
+        }
+
+        if (totalBackfilled > 0) {
+          console.info(`[Migration] Total backfilled ${totalBackfilled} records in ${tableName}.`);
         }
       } catch (err) {
         console.error(`[Migration] Error backfilling ${tableName}:`, err?.message);

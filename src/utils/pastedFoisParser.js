@@ -103,8 +103,7 @@ export const DEFAULT_MATURED_HEADERS = [
   'S.NO.', 'DVSN', 'STTN FROM', 'DEMAND NO.', 'DEMAND DATE', 'DEMAND TIME',
   'EXPECTED LOADING DATE', 'CONSIGNOR', 'CNSG', 'CMDT',
   'TT', 'PC', 'PBF', 'VIA', 'RAKE CMDT',
-  'DSTN', 'TYPE', 'INDENTED UNTS', 'INDENTED 8W', 'OTSG UNTS',
-  'OTSG 8W', 'SUPPLIED UNTS', 'SUPPLIED TIME'
+  'DSTN', 'TYPE', 'INDENTED UNTS', 'INDENTED 8W', 'MET WITH DATE'
 ];
 
 /**
@@ -142,9 +141,6 @@ export function validatePastedFoisHeaders(rows, fileType = 'ODR') {
   if (foundHeaderIndex < 0) {
     // If no header row was found in pasted text, unshift default FOIS headers
     rows.unshift(defaultHeaders);
-  } else if (foundHeaderIndex === 0) {
-    // Replace raw header row with standard FOIS headers to unify column names
-    rows[0] = defaultHeaders;
   }
 
   return true;
@@ -154,6 +150,15 @@ export function validatePastedFoisHeaders(rows, fileType = 'ODR') {
  * Convert raw pasted FOIS text into a standard browser File object (.xlsx format)
  * so it can seamlessly pass through the exact same preview and incremental upload pipeline.
  */
+function simpleStringHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i += 1) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
 export function createExcelFileFromText(rawText, fileType = 'ODR') {
   const { rows } = parsePastedTextToAOA(rawText);
   if (!rows || rows.length === 0) {
@@ -165,10 +170,12 @@ export function createExcelFileFromText(rawText, fileType = 'ODR') {
 
   const sheet = XLSX.utils.aoa_to_sheet(rows);
   const wb = XLSX.utils.book_new();
+  wb.Props = { CreatedDate: new Date(2026, 0, 1) };
   XLSX.utils.book_append_sheet(wb, sheet, 'FOIS_Data');
 
-  const arrayBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  const fileName = `pasted_fois_${fileType.toLowerCase()}_${Date.now()}.xlsx`;
+  const arrayBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array', Props: { CreatedDate: new Date(2026, 0, 1) } });
+  const textHash = simpleStringHash(rawText.trim());
+  const fileName = `pasted_fois_${fileType.toLowerCase()}_${textHash}.xlsx`;
 
   return new File([arrayBuffer], fileName, {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

@@ -22,7 +22,7 @@ export function formatFoisTime(value) {
     hours = Math.floor(totalMinutes / 60);
     minutes = totalMinutes % 60;
   } else {
-    return text;
+    return "";
   }
   if (!Number.isFinite(hours) || !Number.isFinite(minutes) || hours > 23 || minutes > 59) return text;
   const suffix = hours >= 12 ? "PM" : "AM";
@@ -41,16 +41,25 @@ export function formatFoisDateTime(dateValue, timeValue) {
 
 function parseDateParts(value) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return { year: value.getUTCFullYear(), month: value.getUTCMonth() + 1, day: value.getUTCDate() };
+    const year = value.getUTCFullYear();
+    if (year >= 2000 && year <= 2100) {
+      return { year, month: value.getUTCMonth() + 1, day: value.getUTCDate() };
+    }
+    return null;
   }
   const text = String(value ?? "").trim();
   if (!text) return null;
   if (/^\d+(?:\.\d+)?$/.test(text)) {
     const serial = Number(text);
-    if (serial >= 20000 && serial <= 80000) {
+    // Excel serial numbers for FOIS (2020 - 2030): ~43831 to ~60000
+    if (serial >= 40000 && serial <= 60000) {
       const date = new Date(Date.UTC(1899, 11, 30) + Math.floor(serial) * 86400000);
-      return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
+      const year = date.getUTCFullYear();
+      if (year >= 2020 && year <= 2100) {
+        return { year, month: date.getUTCMonth() + 1, day: date.getUTCDate() };
+      }
     }
+    return null;
   }
   const iso = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
   if (iso) return validParts(Number(iso[1]), Number(iso[2]), Number(iso[3]));
@@ -63,6 +72,14 @@ function parseDateParts(value) {
 }
 
 function validParts(year, month, day) {
-  if (year < 1900 || year > 2200 || month < 1 || month > 12 || day < 1 || day > 31) return null;
+  if (year < 2000 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31) return null;
   return { year, month, day };
+}
+
+export function isNumericCode(val) {
+  const s = String(val || "").trim();
+  if (!s || !/^\d+(\.\d+)?$/.test(s)) return false;
+  const num = Number(s);
+  if (num >= 40000 && num <= 60000) return false;
+  return true;
 }
