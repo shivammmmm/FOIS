@@ -3626,7 +3626,6 @@ if (getStorageStatus().postgres) {
       requestedBy: "System startup",
       trigger: "initial-safe-reprocess",
       scope: { type: "all" },
-      emitNotifications: false,
     });
   }
 }

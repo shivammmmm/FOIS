@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
-  AlertTriangle,
   Bell,
   CheckCheck,
   Save,
@@ -33,24 +32,49 @@ const FILTER_SOURCE = "notifications";
 const SAVED_SOURCE = "Notifications";
 const PAGE_SIZE = 500;
 
-const TYPE_CONFIG = {
-  Arrival: { icon: ArrowDownToLine, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "Arrival" },
-  Departure: { icon: ArrowUpFromLine, color: "text-blue-400", bg: "bg-blue-500/10", label: "Departure" },
+// The three lifecycle stages a notification can represent (Indent -> Supplied -> Matured/Dispatched).
+// Kept distinct from CATEGORY_CONFIG (Inward/Outward), which is the movement direction, not the stage.
+const STAGE_CONFIG = {
+  NewIndent: { icon: FileText, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "New Rack Indent" },
+  Supplied: { icon: Truck, color: "text-amber-400", bg: "bg-amber-500/10", label: "Rack Supplied" },
+  Dispatched: { icon: Train, color: "text-blue-400", bg: "bg-blue-500/10", label: "Rack Dispatched / Matured" },
+};
+const DEFAULT_STAGE_CONFIG = { icon: Bell, color: "text-muted-foreground", bg: "bg-muted", label: "Update" };
+
+const CATEGORY_CONFIG = {
   Inward: { icon: ArrowDownToLine, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "Inward" },
   Outward: { icon: ArrowUpFromLine, color: "text-blue-400", bg: "bg-blue-500/10", label: "Outward" },
-  AdminReview: { icon: AlertTriangle, color: "text-amber-500", bg: "bg-amber-500/10", label: "Manual Review" },
-  IndentPlaced: { icon: FileText, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "New Demand" },
-  NewRakeDemand: { icon: FileText, color: "text-emerald-400", bg: "bg-emerald-500/10", label: "New Demand" },
-  IndentSupplied: { icon: Truck, color: "text-amber-400", bg: "bg-amber-500/10", label: "Rake Supplied" },
-  RakeSupplied: { icon: Truck, color: "text-amber-400", bg: "bg-amber-500/10", label: "Rake Supplied" },
-  RakeDispatched: { icon: Train, color: "text-blue-400", bg: "bg-blue-500/10", label: "Rake Dispatched" },
-  DemandMatured: { icon: Train, color: "text-blue-400", bg: "bg-blue-500/10", label: "Rake Dispatched" },
 };
+const DEFAULT_CATEGORY_CONFIG = CATEGORY_CONFIG.Outward;
+
+// notification_type is only reliably present on rows created after this field started
+// being persisted - older rows are identified from their title text instead, since the
+// title always carried the stage even before notification_type was stored on the record.
+function getStage(notification) {
+  const haystack = `${notification.notification_type || ""} ${notification.title || ""}`.toLowerCase();
+  if (/newrackindent|new rack indent|indentplaced|newrakedemand|demandcreated|new demand/.test(haystack)) {
+    return "NewIndent";
+  }
+  if (/racksupplied|rack supplied|indentsupplied|rakesupplied|partialsupplyupdated/.test(haystack)) {
+    return "Supplied";
+  }
+  if (/rackdispatched|rack dispatched|rakedispatched|rake dispatched|demandmatured|demandcompleted|matured/.test(haystack)) {
+    return "Dispatched";
+  }
+  return null;
+}
+
+function getStageConfig(notification) {
+  const stage = getStage(notification);
+  if (stage === "NewIndent") return STAGE_CONFIG.NewIndent;
+  if (stage === "Supplied") return STAGE_CONFIG.Supplied;
+  if (stage === "Dispatched") return STAGE_CONFIG.Dispatched;
+  return DEFAULT_STAGE_CONFIG;
+}
 
 const DEFAULT_FILTERS = {
-  showNewDemand: true,
-  showSupplied: true,
-  showDispatched: true,
+  showInward: true,
+  showOutward: true,
   zones: [],
   divisions: [],
   states: [],
@@ -198,28 +222,10 @@ export default function Notifications() {
     return { byOdr, byBatch };
   }, [movements]);
 
-  function isNewDemandType(type) {
-    const t = String(type || "").toLowerCase();
-    return t.includes("indentplaced") || t.includes("newrakedemand") || t.includes("demandcreated") || t.includes("new demand");
-  }
-
-  function isSuppliedType(type) {
-    const t = String(type || "").toLowerCase();
-    return t.includes("indentsupplied") || t.includes("rakesupplied") || t.includes("partialsupplyupdated") || t.includes("rake supplied");
-  }
-
-  function isDispatchedType(type) {
-    const t = String(type || "").toLowerCase();
-    return t.includes("rakedispatched") || t.includes("demandmatured") || t.includes("demandcompleted") || t.includes("rake dispatched");
-  }
-
   const filteredNotifs = useMemo(() => {
     return notifs.filter((notification) => {
-      const notifType = notification.notification_type || notification.type || "";
-
-      if (isNewDemandType(notifType) && !filters.showNewDemand) return false;
-      if (isSuppliedType(notifType) && !filters.showSupplied) return false;
-      if (isDispatchedType(notifType) && !filters.showDispatched) return false;
+      if (notification.type === "Inward" && !filters.showInward) return false;
+      if (notification.type === "Outward" && !filters.showOutward) return false;
 
       if (!optionMatches(filters.divisions, notification.related_division || "")) {
         return false;
@@ -254,9 +260,8 @@ export default function Notifications() {
   const unreadCount = displayNotifs.length;
 
   const hasActiveFilters =
-    filters.showNewDemand !== true ||
-    filters.showSupplied !== true ||
-    filters.showDispatched !== true ||
+    filters.showInward !== true ||
+    filters.showOutward !== true ||
     filters.zones.length > 0 ||
     filters.divisions.length > 0 ||
     filters.states.length > 0 ||
@@ -273,9 +278,8 @@ export default function Notifications() {
 
   function applyFilterState(nextFilters) {
     setFilters({
-      showNewDemand: nextFilters.showNewDemand ?? nextFilters.showInward ?? true,
-      showSupplied: nextFilters.showSupplied ?? true,
-      showDispatched: nextFilters.showDispatched ?? nextFilters.showOutward ?? true,
+      showInward: nextFilters.showInward ?? true,
+      showOutward: nextFilters.showOutward ?? true,
       zones: normalizeMultiValue(nextFilters.zones ?? nextFilters.filterZone),
       divisions: normalizeMultiValue(nextFilters.divisions ?? nextFilters.filterDivision),
       states: normalizeMultiValue(nextFilters.states),
@@ -400,10 +404,9 @@ export default function Notifications() {
       {/* Filter Control Section */}
       <div className="space-y-4 rounded-2xl border border-border/80 bg-card p-5 shadow-xs">
         <div className="flex flex-wrap items-center gap-3">
-          <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Notification Type</span>
-          <CheckboxFilter checked={filters.showNewDemand} onChange={(value) => setFilter("showNewDemand", value)} label="📝 New Rack Indent" color="text-emerald-600" bgColor="bg-emerald-500/10" borderColor="border-emerald-500/30" />
-          <CheckboxFilter checked={filters.showSupplied} onChange={(value) => setFilter("showSupplied", value)} label="🚚 Rack Supplied" color="text-amber-600" bgColor="bg-amber-500/10" borderColor="border-amber-500/30" />
-          <CheckboxFilter checked={filters.showDispatched} onChange={(value) => setFilter("showDispatched", value)} label="🚆 Rack Dispatched" color="text-blue-600" bgColor="bg-blue-500/10" borderColor="border-blue-500/30" />
+          <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">Category</span>
+          <CheckboxFilter checked={filters.showInward} onChange={(value) => setFilter("showInward", value)} label="⬇️ Inward" color="text-emerald-600" bgColor="bg-emerald-500/10" borderColor="border-emerald-500/30" />
+          <CheckboxFilter checked={filters.showOutward} onChange={(value) => setFilter("showOutward", value)} label="⬆️ Outward" color="text-blue-600" bgColor="bg-blue-500/10" borderColor="border-blue-500/30" />
         </div>
 
         <div className="flex flex-wrap gap-2">
@@ -520,8 +523,9 @@ export default function Notifications() {
           </div>
         ) : (
           displayNotifs.map((notification) => {
-            const config = TYPE_CONFIG[notification.type] || TYPE_CONFIG.Inward;
-            const IconComp = config.icon;
+            const stageConfig = getStageConfig(notification);
+            const categoryConfig = CATEGORY_CONFIG[notification.type] || DEFAULT_CATEGORY_CONFIG;
+            const IconComp = stageConfig.icon;
             const relatedRakes = movementsOfNotification(notification);
             const isExpanded = expanded.has(notification.id);
             return (
@@ -529,8 +533,8 @@ export default function Notifications() {
                 key={notification.id}
                 className="flex items-start gap-4 rounded-2xl border border-primary/30 bg-primary/5 hover:bg-primary/10 transition-all shadow-xs p-4"
               >
-                <div className={`mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl ${config.bg}`}>
-                  <IconComp className={`h-4 w-4 ${config.color}`} />
+                <div className={`mt-0.5 flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl ${stageConfig.bg}`}>
+                  <IconComp className={`h-4 w-4 ${stageConfig.color}`} />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -548,8 +552,11 @@ export default function Notifications() {
                   </div>
                   <p className="mt-2 whitespace-pre-line text-xs leading-6 text-muted-foreground">{notification.message}</p>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <span className="rounded-lg border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
-                      {config.label}
+                    <span className={`rounded-lg border px-2 py-0.5 text-xs font-medium ${stageConfig.color} ${stageConfig.bg}`}>
+                      {stageConfig.label}
+                    </span>
+                    <span className={`rounded-lg border px-2 py-0.5 text-xs font-medium ${categoryConfig.color} ${categoryConfig.bg}`}>
+                      {categoryConfig.label}
                     </span>
                     {notification.related_division && (
                       <span className="rounded-lg border border-border bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">
@@ -704,9 +711,8 @@ function dedupeSavedFilters(items) {
 function savedFilterSignature(filterData) {
   if (!filterData || typeof filterData !== "object") return "";
   const obj = {
-    showNewDemand: filterData.showNewDemand ?? true,
-    showSupplied: filterData.showSupplied ?? true,
-    showDispatched: filterData.showDispatched ?? true,
+    showInward: filterData.showInward ?? true,
+    showOutward: filterData.showOutward ?? true,
     zones: (filterData.zones || []).slice().sort(),
     divisions: (filterData.divisions || []).slice().sort(),
     states: (filterData.states || []).slice().sort(),
@@ -722,9 +728,8 @@ function savedFilterSignature(filterData) {
 
 function normalizeNotificationFilters(source) {
   return {
-    showNewDemand: source.showNewDemand ?? true,
-    showSupplied: source.showSupplied ?? true,
-    showDispatched: source.showDispatched ?? true,
+    showInward: source.showInward ?? true,
+    showOutward: source.showOutward ?? true,
     zones: Array.isArray(source.zones) ? source.zones : [],
     divisions: Array.isArray(source.divisions) ? source.divisions : [],
     states: Array.isArray(source.states) ? source.states : [],

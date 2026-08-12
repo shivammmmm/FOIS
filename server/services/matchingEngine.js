@@ -1,5 +1,4 @@
 import { pool } from "../db/pool.js";
-import { createNotification } from "../notifications/service.js";
 import { matchedLifecycleStatus } from "./lifecycleStatus.js";
 import { generateBusinessKey } from "./incrementalUploadEngine.js";
 
@@ -254,12 +253,11 @@ async function insertResults(client, results) {
 
 export async function runMatchingEngine({
   requestedBy = "System", trigger = "reprocess", scope = { type: "all" },
-  resetManualDecisions = false, emitNotifications = true,
+  resetManualDecisions = false,
 } = {}) {
   const startedAt = Date.now();
   const runId = crypto.randomUUID();
   const client = await pool.connect();
-  let notificationEvents = [];
   try {
     await ensureMatchingSchema(client);
     const ruleQuery = await client.query("SELECT version, config FROM matching_rule_config WHERE id='active'");
@@ -392,7 +390,6 @@ export async function runMatchingEngine({
     `);
     await client.query("COMMIT");
 
-    const odrById = new Map(odrs.map((row) => [row.id, row]));
     await client.query("BEGIN");
     await client.query(`
       INSERT INTO freight_lifecycle_events
@@ -415,9 +412,6 @@ export async function runMatchingEngine({
     `);
     await client.query("COMMIT");
 
-    notificationEvents = results
-      .filter((item) => ["Matched", "Partial", "Completed", "Manual Review"].includes(item.status) && item.odr_id)
-      .map((item) => ({ item, odr: odrById.get(item.odr_id) }));
     const summary = {
       total_odr: odrs.length,
       total_matured: matured.length,
@@ -441,36 +435,12 @@ export async function runMatchingEngine({
     );
     console.info("[Matching] Matching Completed", summary);
 
-    for (let start = 0; emitNotifications && start < notificationEvents.length; start += 10) {
-      await Promise.all(notificationEvents.slice(start, start + 10).map(async ({ item, odr }) => {
-        const isManual = item.status === "Manual Review";
-        if (isManual) return;
-        const raw = odr?.raw || {};
-        const fromStation = odr?.station_from || raw.station_from || "-";
-        const toStation = odr?.station_to || raw.station_to || "-";
-        const commodity = odr?.commodity || raw.commodity || raw.rake_cmdt || "-";
-        const dispatchDate = raw.departure_date || raw.demand_date || new Date().toISOString().split("T")[0];
-
-        const notifType = "RakeDispatched";
-        const rakeId = raw.unique_rake_code || `#${raw.odr_number || odr?.number || ""}`;
-        const title = `🚆 Rake Dispatched: ${rakeId}`;
-        const message = `🔖 Rake ID: ${rakeId}\n📍 Station: ${fromStation}\nDestination: ${toStation}\nCommodity: ${commodity}\nDispatch Date: ${dispatchDate}`;
-
-        await createNotification({
-          movement_reference: `MATCH:${item.odr_id}:${item.matured_id || "REVIEW"}`,
-          station_code: odr?.station_from || null,
-          notification_type: notifType,
-          type: ["Inward", "Outward"].includes(raw?.movement_type) ? raw.movement_type : "Outward",
-          title,
-          message,
-          severity: "info",
-          related_odr: raw?.odr_number || null,
-          related_division: raw?.division || null,
-          batch_id: odr?.batch || null,
-          data: { movement: raw, match_id: item.match_id, from_station: fromStation, to_station: toStation, commodity, dispatch_date: dispatchDate },
-        }).catch((error) => console.error("[Matching] notification failed", error?.message));
-      }));
-    }
+    // NOTE: this engine intentionally does not emit user-facing notifications.
+    // Its match_status is a fuzzy-matching verdict for the admin Comparison view only
+    // (see the "does NOT touch fm.data.status" comment above) and is not proof of a
+    // genuine rake maturity/dispatch event. The real Indent -> Supplied -> Matured
+    // notifications are emitted from the exact business-key match path in server/index.js,
+    // gated on an actual MET WITH DATE value.
     return summary;
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);

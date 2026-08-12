@@ -111,6 +111,7 @@ export async function createNotification({
   // Create RailNotification
   const railNotification = await createRecord("RailNotification", {
     type: type ?? normalized_notification_type,
+    notification_type: normalized_notification_type,
     title: title ?? "",
     message: message ?? "",
     severity,
