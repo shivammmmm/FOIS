@@ -22,6 +22,63 @@ function splitCsvLine(line) {
   return result;
 }
 
+// FOIS reports render these as merged "group" header cells spanning several
+// sub-columns (e.g. INDENTED spans TYPE/UNTS/8W, SUPPLIED spans UNTS/TIME).
+// Copy-pasting the table brings both the group row and the sub-column row
+// across as two separate lines, so two different columns literally end up
+// named "UNTS" (Indented Units and Supplied Units) and two named "TIME"
+// (Indent Time and Supplied Time) — ambiguous unless recombined with their
+// group label before anything downstream keys off the header text.
+const FOIS_GROUP_HEADER_LABELS = new Set(['INDENTED', 'SUPPLIED', 'OTSG', 'OUTSTANDING']);
+// The only sub-column labels ever seen nested under a FOIS group header.
+// A blank group-row cell can't be told apart from "still under the same
+// merged group" vs "group's span already ended, next column is standalone"
+// — so instead of trusting blankness, only keep prefixing while the sub
+// label itself is one of these known group members. Anything else (e.g. a
+// plain STATUS/REMARKS column right after a group) ends the group immediately.
+const FOIS_GROUP_SUB_LABELS = new Set(['TYPE', 'UNTS', '8W', 'TIME']);
+
+/**
+ * If a two-row grouped header (group label row immediately above a sub-column
+ * row) is present, merge them into one row of combined header names in place
+ * — e.g. "INDENTED" + "UNTS" -> "INDENTED UNTS", "SUPPLIED" + "TIME" ->
+ * "SUPPLIED TIME" — so every downstream lookup sees the same flattened
+ * header text it already expects from a single-row FOIS export.
+ */
+export function flattenGroupedFoisHeaderRows(rows) {
+  for (let i = 0; i < rows.length - 1; i += 1) {
+    const groupRow = rows[i];
+    const subRow = rows[i + 1];
+    const groupCells = groupRow.map((cell) => String(cell || '').trim().toUpperCase());
+    if (!groupCells.some((cell) => FOIS_GROUP_HEADER_LABELS.has(cell))) continue;
+
+    // Trailing merged-blank cells often don't survive copy/paste on the group
+    // row (trimEnd() above can strip them too), so it's routinely shorter
+    // than the sub-header row. Don't treat "ran past the group row's own
+    // length" as a signal to stop — keep the last real label in force for
+    // the rest of the row; only an actual new label cell ends it.
+    const columnCount = Math.max(groupRow.length, subRow.length);
+    let currentGroup = '';
+    const merged = [];
+    for (let c = 0; c < columnCount; c += 1) {
+      const groupCell = groupCells[c] || '';
+      if (FOIS_GROUP_HEADER_LABELS.has(groupCell)) currentGroup = groupCell;
+
+      const subCell = String(subRow[c] || '').trim();
+      const subCellIsGroupMember = FOIS_GROUP_SUB_LABELS.has(subCell.toUpperCase());
+      if (currentGroup && subCell && subCellIsGroupMember) merged.push(`${currentGroup} ${subCell}`);
+      else {
+        merged.push(subCell || groupRow[c] || '');
+        if (subCell && !subCellIsGroupMember) currentGroup = '';
+      }
+    }
+
+    rows.splice(i, 2, merged);
+    return true;
+  }
+  return false;
+}
+
 /**
  * Auto-detect format and parse raw pasted text into a 2D Array of strings (AOA).
  * Handles:
@@ -90,6 +147,8 @@ export function parsePastedTextToAOA(rawText) {
     });
     return searchCells.length < nonEmptyCells.length;
   });
+
+  flattenGroupedFoisHeaderRows(rows);
 
   const parsedRowCount = rows.length > 1 ? rows.length - 1 : 0;
 

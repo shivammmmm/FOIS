@@ -76,6 +76,7 @@ import {
   parseODRRow,
 } from "../src/utils/odrcomparison.js";
 import { USER_CATEGORIES } from "../src/utils/userCategories.js";
+import { flattenGroupedFoisHeaderRows } from "../src/utils/pastedFoisParser.js";
 
 // Import the new clean Phase-1 modular controller
 import * as mastersController from "./controllers/mastersController.js";
@@ -152,7 +153,20 @@ const DEFAULT_MATURED_HEADERS = [
   "OTSG 8W", "SUPPLIED UNTS", "SUPPLIED TIME"
 ];
 
+function normalizeGroupedHeaderRows(sheet) {
+  if (!sheet?.["!ref"]) return sheet;
+  const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true });
+  if (!Array.isArray(aoa) || aoa.length < 2) return sheet;
+  const changed = flattenGroupedFoisHeaderRows(aoa);
+  return changed ? XLSX.utils.aoa_to_sheet(aoa) : sheet;
+}
+
 function sheetToFoisRows(sheet, fileType) {
+  // FOIS reports render INDENTED/SUPPLIED as merged group-header cells spanning
+  // several sub-columns (e.g. INDENTED -> TYPE/UNTS/8W). Raw .xlsx uploads can
+  // carry that as two literal header rows, which findFoisHeaderRow can't match
+  // on its own — flatten them into single combined header cells first.
+  sheet = normalizeGroupedHeaderRows(sheet);
   const headerRow = findFoisHeaderRow(sheet, fileType);
   if (headerRow >= 0) {
     return {
@@ -350,10 +364,14 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "7d";
 const passwordResetCodes = new Map();
 const pendingUploadChunks = new Map();
 
+// ensureSuperAdminExists() is a no-op once this account already exists, so
+// this password is only ever used the very first time a fresh database boots
+// with no users yet — it must come from the environment, never a hardcoded
+// literal (a known default here is a standing admin-bypass credential).
 const SUPER_ADMIN = {
   username: "6266782930",
   email: process.env.ADMIN_EMAIL || "shivampa345@gmail.com",
-  password: "123456",
+  password: process.env.SUPER_ADMIN_PASSWORD,
 };
 
 const ADMIN_ROLES = ["super_admin", "admin"];
@@ -685,7 +703,12 @@ app.post("/api/auth/forgot-password", async (req, res, next) => {
         sent = true;
       } catch (error) { console.error("[PasswordReset] SES delivery failed", error?.message); }
     }
-    return res.json({ message: sent ? "Reset code sent to your email." : "Reset code generated for local development.", ...(process.env.NODE_ENV === "production" ? {} : { development_code: code }) });
+    // Only ever echo the raw code back when explicitly opted into local/dev
+    // testing (ALLOW_DEV_RESET_CODE=true) — defaulting to "hide unless this
+    // is literally production" leaks the code on any deployment that simply
+    // never set NODE_ENV, which is exactly what this app's own .env does.
+    const includeDevCode = process.env.ALLOW_DEV_RESET_CODE === "true";
+    return res.json({ message: sent ? "Reset code sent to your email." : "Reset code generated, but no email delivery is configured — set EMAIL_PROVIDER to enable it.", ...(includeDevCode ? { development_code: code } : {}) });
   } catch (error) { next(error); }
 });
 
@@ -1867,17 +1890,14 @@ app.post(
         trigger: fileType === "ODR" ? "odr-upload" : "matured-upload",
       })
         .then(async (matching) => {
-          const mMissing = matching.unmatched_matured || 0;
-          let mMatured = maturedStatusUpdates;
-          let mUpdated = updatedRecords;
-          if (fileType === "MaturedIndent" && matching.matched > 0) {
-            mMatured += Number(matching.matched || 0);
-            mUpdated += Number(matching.matched || 0);
-          }
+          // matching.matched is the fuzzy comparison-engine's own "good candidate"
+          // count for the admin Comparison page — a different, broader signal than
+          // the exact MET-WITH-DATE match that actually flips a rake to "Matured".
+          // It must never be folded into matured_status_updates/updatedRecords:
+          // doing so previously inflated the counts Upload History shows with
+          // records that were never actually marked Matured.
           await updateRecord("UploadLog", savedUploadLog.id, {
-            missing_odrs_found: mMissing,
-            matured_status_updates: mMatured,
-            updatedRecords: mUpdated,
+            missing_odrs_found: matching.unmatched_matured || 0,
             matching,
           }).catch((e) => console.error("[Upload] UploadLog update error:", e?.message));
         })

@@ -98,7 +98,7 @@ export default function Login() {
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
               className="mt-1 w-full rounded-lg border px-3 py-2 outline-none"
-              placeholder="6266782930"
+              placeholder="Username or email"
               required
             />
             <button type="button" onClick={() => setResetOpen((value) => !value)} className="mt-2 text-sm font-medium text-primary hover:underline">Forgot password?</button>
@@ -153,7 +153,7 @@ export default function Login() {
               onChange={(e) => setPassword(e.target.value)}
               type="password"
               className="mt-1 w-full rounded-lg border px-3 py-2 outline-none"
-              placeholder="123456"
+              placeholder="Password"
               required
             />
           </div>

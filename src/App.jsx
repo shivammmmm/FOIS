@@ -157,6 +157,17 @@ const AuthenticatedApp = () => {
       >
         <Route path="/" element={<RoleHomeRedirect />} />
 
+        {/* Shared with every authenticated role (admin and user alike) — must
+            NOT be duplicated inside a role-specific block below: whichever
+            role's block is declared first in this tree wins the route match,
+            silently redirecting every other role away before this page ever
+            renders (this is exactly the bug that made it unreachable for
+            "user"-role accounts, who were bounced to /admin -> /dashboard ->
+            /inward-dashboard instead). */}
+        <Route element={<Layout />}>
+          <Route path="/notification-preferences" element={<NotificationPreferences />} />
+        </Route>
+
         {/* ==========================================================================
             SECURE ADMINISTRATIVE PANEL WORKSPACE ROUTES (ADMIN ONLY)
            ========================================================================== */}
@@ -178,7 +189,6 @@ const AuthenticatedApp = () => {
             <Route path="/admin/freight" element={<Navigate to="/admin/fois-reports" replace />} />
             <Route path="/admin/:operation" element={<OperationsKeepAlive />} />
             <Route path="/admin/notifications" element={<Notifications />} />
-            <Route path="/notification-preferences" element={<NotificationPreferences />} />
 
             <Route
               path="/admin/station-master"
@@ -224,10 +234,6 @@ const AuthenticatedApp = () => {
             <Route path="/dashboard" element={<Navigate to="/inward-dashboard" replace />} />
             <Route path="/search" element={<Navigate to="/fois-reports" replace />} />
             <Route path="/:operation" element={<OperationsKeepAlive />} />
-            <Route
-              path="/notification-preferences"
-              element={<NotificationPreferences />}
-            />
           </Route>
         </Route>
 

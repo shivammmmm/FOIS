@@ -1,7 +1,39 @@
 import crypto from "crypto";
+import { formatFoisDate, formatFoisTime } from "../../src/utils/foisDateTime.js";
 
 function norm(value) {
   return String(value || "").trim().toUpperCase();
+}
+
+// Excel stores dates/times as raw numeric serials (e.g. 0.4451388... for
+// 10:41 AM); reading a cell with raw:true hands that number straight
+// through uncoverted. Convert a purely-numeric value via the given FOIS
+// formatter before it goes into the key. An already-formatted string (ISO
+// date, "HH:MM") is left completely untouched — changing the format of a
+// key that already works would break matching for every currently in-flight
+// indent on its next upload, since the stored key was built the old way.
+function normalizeKeyPart(rawValue, formatter) {
+  const text = String(rawValue ?? "").trim();
+  if (!text || !/^\d+(\.\d+)?$/.test(text)) return norm(text);
+  const formatted = formatter(text);
+  return formatted ? norm(formatted) : norm(text);
+}
+
+// Walk candidates in priority order and return the first one that is a real,
+// present value — unlike `??`, an empty string or a genuine 0 does not stop
+// the search, so a later (correct) field isn't skipped just because an
+// earlier one happened to be blank/zero.
+function firstRealNumber(candidates, { requirePositive = false } = {}) {
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === null) continue;
+    const trimmed = String(candidate).trim();
+    if (trimmed === "") continue;
+    const num = Number(trimmed);
+    if (Number.isNaN(num)) continue;
+    if (requirePositive && num <= 0) continue;
+    return num;
+  }
+  return 0;
 }
 
 /**
@@ -14,8 +46,14 @@ export function generateBusinessKey(record, fileType = "ODR") {
   const division = norm(record.division || record.from_division || raw.division || raw.DVSN || raw.DIVISION || "");
   const stationFrom = norm(record.station_from || record.stationFrom || raw.station_from || raw['STTN FROM'] || raw['STATION FROM'] || "");
   const no = norm(record.odr_number || record.indent_number || record.indentNo || raw['DEMAND NO.'] || raw['NO.'] || raw['indent_no'] || raw['indent_number'] || "");
-  const dateStr = norm(record.departure_date || record.indent_date || record.demand_date || record.indentDate || raw['DEMAND DATE'] || raw['DATE'] || raw['indent_date'] || "");
-  const timeStr = norm(record.indent_time || record.demand_time || record.indentTime || raw['DEMAND TIME'] || raw['TIME'] || raw['Time'] || raw['indent_time'] || "");
+  const dateStr = normalizeKeyPart(
+    record.departure_date || record.indent_date || record.demand_date || record.indentDate || raw['DEMAND DATE'] || raw['DATE'] || raw['indent_date'] || "",
+    formatFoisDate
+  );
+  const timeStr = normalizeKeyPart(
+    record.indent_time || record.demand_time || record.indentTime || raw['DEMAND TIME'] || raw['TIME'] || raw['Time'] || raw['indent_time'] || "",
+    formatFoisTime
+  );
 
   return `${zone}|${division}|${stationFrom}|${no}|${dateStr}|${timeStr}`;
 }
@@ -65,25 +103,24 @@ export function aggregateMultiLineIndents(parsedRecords, fileType = "ODR") {
     const raw = record.raw_data || {};
     // Read indented_units strictly from raw ODR fields — never from record.indented_units
     // which may already be an aggregated (wrong) sum from a prior sync run.
-    const iu = Number(
-      raw['indented_units'] ??
-      raw['INDENTED UNTS'] ??
-      raw['INDENTED UNITS'] ??
-      raw['otsg_units'] ??
-      raw['otsg_8w'] ??
-      record.indented_units ??
-      record.wagons_demanded ??
-      0
-    );
+    // Demand comes strictly from FOIS's own "Indented Units" columns — OTSG UNTS/8W
+    // is a different figure (outstanding/pending balance, not the original demand)
+    // and must never be substituted in as if it were the indented quantity.
+    const iu = firstRealNumber([
+      raw['indented_units'],
+      raw['INDENTED UNTS'],
+      raw['INDENTED UNITS'],
+      record.indented_units,
+      record.wagons_demanded,
+    ]);
     // supplied_units in raw ODR represents the TOTAL rake supplied (written on one arbitrary row).
     // Track it at parent level as MAX; do NOT distribute to individual line items.
-    const su = Number(
-      record.supplied_units ??
-      raw['SUPPLIED UNTS'] ??
-      raw['SUPPLIED UNITS'] ??
-      raw['supplied_units'] ??
-      0
-    );
+    const su = firstRealNumber([
+      record.supplied_units,
+      raw['SUPPLIED UNTS'],
+      raw['SUPPLIED UNITS'],
+      raw['supplied_units'],
+    ], { requirePositive: true });
 
     const srNo = String(raw['srNo'] || raw['SR NO'] || raw['sr_no'] || "").trim();
     const dedupKey = srNo || `${record.station_to || record.destination || ""}|${iu}`;

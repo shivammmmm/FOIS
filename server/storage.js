@@ -676,6 +676,11 @@ export async function ensureSuperAdminExists(superAdmin) {
   const existing = await findUserByIdentifier(superAdmin.username);
   if (existing) return;
 
+  if (!superAdmin.password) {
+    console.error("[ensureSuperAdminExists] SUPER_ADMIN_PASSWORD is not set — skipping initial admin account creation. Set it and restart to create the first admin.");
+    return;
+  }
+
   const passwordHash = await bcrypt.hash(superAdmin.password, 10);
   await createUser({
     username: superAdmin.username,

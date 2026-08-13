@@ -87,7 +87,9 @@ export function parseODRRow(row, batchId, seqIndex = 1) {
   const isWagon = isWagonType(rawRakeCmdt);
   const wagonType = fields.wagonType || (isWagon ? rawRakeCmdt : "");
 
-    const rawIndented = parseInt(fields.indentedUnits, 10) || parseInt(fields.indented8w, 10) || parseInt(fields.otsgUnits, 10) || parseInt(fields.otsg8w, 10) || 0;
+    // Demand comes strictly from "Indented Units" — OTSG UNTS/8W is the outstanding
+    // (pending) balance, a different figure, and must never stand in for the indent.
+    const rawIndented = parseInt(fields.indentedUnits, 10) || parseInt(fields.indented8w, 10) || 0;
     const rawSupplied = parseInt(fields.suppliedUnits, 10) || 0;
 
     return {
