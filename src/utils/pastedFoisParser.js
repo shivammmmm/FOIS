@@ -77,13 +77,18 @@ export function parsePastedTextToAOA(rawText) {
   }
 
   const rawRows = lines.map(parseLine);
-  // Filter out FOIS Web Portal filter search box rows (e.g. Searc, Search..., fn)
+  // Filter out FOIS Web Portal filter search box rows (e.g. Searc, Search..., fn).
+  // These can appear as one placeholder per line (a single-cell row) when copied from
+  // the portal's per-column search boxes, not just as multiple cells in one row, so a
+  // row is dropped whenever every one of its non-empty cells is a search placeholder.
   const rows = rawRows.filter((row) => {
-    const searchCells = row.filter((cell) => {
+    const nonEmptyCells = row.filter((cell) => String(cell || '').trim().length > 0);
+    if (nonEmptyCells.length === 0) return false;
+    const searchCells = nonEmptyCells.filter((cell) => {
       const norm = String(cell || '').trim().toLowerCase();
       return norm.startsWith('searc') || norm === 'fn' || norm === 'search...' || norm === 'search';
     });
-    return searchCells.length < 2;
+    return searchCells.length < nonEmptyCells.length;
   });
 
   const parsedRowCount = rows.length > 1 ? rows.length - 1 : 0;

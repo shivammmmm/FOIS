@@ -902,10 +902,10 @@ export async function listRecords(entityName, options = {}) {
   let orderSql = "";
   if (safeSortKey) {
     if (directColumns.has(safeSortKey) || safeSortKey === CREATED_DATE_KEYS[entityName]) {
-      orderSql = ` ORDER BY ${safeSortKey} ${desc ? "DESC" : "ASC"} NULLS LAST`;
+      orderSql = ` ORDER BY ${safeSortKey} ${desc ? "DESC" : "ASC"} NULLS LAST, id ${desc ? "DESC" : "ASC"}`;
     } else if (entityName !== "notification_history") {
       params.push(safeSortKey);
-      orderSql = ` ORDER BY (data ->> $${params.length}) ${desc ? "DESC" : "ASC"} NULLS LAST`;
+      orderSql = ` ORDER BY (data ->> $${params.length}) ${desc ? "DESC" : "ASC"} NULLS LAST, id ${desc ? "DESC" : "ASC"}`;
     }
   }
 
