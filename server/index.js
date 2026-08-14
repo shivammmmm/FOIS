@@ -253,9 +253,9 @@ async function bulkLookupCommodityMasters(codes, type = 'Commodity') {
     return {};
   }
 
-  await ensureCommodityCatalogTable(dbPool);
+  await ensureCommodityCatalogTable(pool);
 
-  const result = await dbPool.query(
+  const result = await pool.query(
     `SELECT code, name, commodity_code, commodity_name
      FROM commodity_master
      WHERE code = ANY($1::text[]) AND type = $2`,
@@ -1375,7 +1375,7 @@ app.post(
       const buffer = isBinaryUpload ? req.body : Buffer.from(String(fileBase64), "base64");
       const fileHash = crypto.createHash("sha256").update(buffer).digest("hex");
 
-      const priorUploads = await dbPool.query(
+      const priorUploads = await pool.query(
         `SELECT data FROM upload_logs
          WHERE data->>'file_hash' = $1
             OR (
@@ -1515,8 +1515,6 @@ app.post(
       let newIndentsAdded = 0;
       let suppliedStatusUpdates = 0;
       let maturedStatusUpdates = 0;
-
-      const pool = dbPool;
 
       if (fileType === "ODR") {
         const aggregatedRecords = aggregateMultiLineIndents(parsedRecords, "ODR");
