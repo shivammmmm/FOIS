@@ -17,6 +17,7 @@ import {
   ensureSuperAdminExists,
   findUserById,
   findUserByIdentifier,
+  getNextUploadVersion,
   getStorageStatus,
   initializeStorage,
   listUploadHistory,
@@ -1286,7 +1287,7 @@ app.post(
         const numbers = [...new Set(uniqueRecords.map((r) => r.odr_number).filter(Boolean))];
         const existingRows = numbers.length
           ? await pool.query(
-              `SELECT data->>'odr_number' AS odr_number, data FROM freight_movements WHERE data->>'odr_number' = ANY($1::text[])`,
+              `SELECT data->>'odr_number' AS odr_number, data FROM freight_movements WHERE data->>'odr_number' = ANY($1::text[]) AND (active_status = 'ACTIVE' OR active_status IS NULL)`,
               [numbers]
             )
           : { rows: [] };
@@ -1311,7 +1312,7 @@ app.post(
         const numbers = [...new Set(uniqueRecords.map((r) => r.indent_number).filter(Boolean))];
         const existingRows = numbers.length
           ? await pool.query(
-              `SELECT data->>'odr_number' AS odr_number, data FROM freight_movements WHERE data->>'odr_number' = ANY($1::text[])`,
+              `SELECT data->>'odr_number' AS odr_number, data FROM freight_movements WHERE data->>'odr_number' = ANY($1::text[]) AND (active_status = 'ACTIVE' OR active_status IS NULL)`,
               [numbers]
             )
           : { rows: [] };
@@ -1528,7 +1529,7 @@ app.post(
         const keysToQuery = aggregatedRecords.map(r => r.business_key || generateBusinessKey(r, "ODR")).filter(Boolean);
         const existingRows = keysToQuery.length
           ? await pool.query(
-              `SELECT id, data, business_key FROM freight_movements WHERE business_key = ANY($1::text[]) OR (data->>'business_key') = ANY($1::text[])`,
+              `SELECT id, data, business_key FROM freight_movements WHERE (business_key = ANY($1::text[]) OR (data->>'business_key') = ANY($1::text[])) AND (active_status = 'ACTIVE' OR active_status IS NULL)`,
               [keysToQuery]
             )
           : { rows: [] };
@@ -1687,7 +1688,7 @@ app.post(
 
         const existingMovements = keysToMatch.length
           ? await pool.query(
-              `SELECT id, data, business_key FROM freight_movements WHERE business_key = ANY($1::text[]) OR (data->>'business_key') = ANY($1::text[])`,
+              `SELECT id, data, business_key FROM freight_movements WHERE (business_key = ANY($1::text[]) OR (data->>'business_key') = ANY($1::text[])) AND (active_status = 'ACTIVE' OR active_status IS NULL)`,
               [keysToMatch]
             )
           : { rows: [] };
@@ -1720,9 +1721,14 @@ app.post(
             const updatedStatus = hasMetWithDate ? "Matured" : (match.data.status || "Indent");
             const mergedRawData = { ...match.data.raw_data, ...record.raw_data, 'MET WITH DATE': metWithDate };
 
+            // Supplied units/time must come strictly from real "Supplied" data that was
+            // already recorded on the movement (typically from an earlier ODR-stage
+            // upload) — a Matured Indent row never carries genuine supplied figures of
+            // its own (see parseIndentRow), so there is nothing legitimate to fall back
+            // to. Guessing supplied_units = indented_units, or supplied_time =
+            // met_with_date, fabricates a "Supplied" event that was never actually
+            // recorded, which is exactly as wrong as the earlier OTSG/indented mixup.
             const existingSupplied = parseInt(match.data.supplied_units, 10) || 0;
-            const maturedUnits = parseInt(record.wagons_demanded || record.indented_units || record.supplied_units, 10) || 0;
-            const finalSuppliedUnits = existingSupplied > 0 ? existingSupplied : maturedUnits;
 
             const updatedData = {
               ...match.data,
@@ -1732,8 +1738,8 @@ app.post(
               matured_date: metWithDate || match.data.matured_date,
               met_with_date: metWithDate || match.data.met_with_date,
               indented_units: match.data.indented_units || record.indented_units || record.wagons_demanded,
-              supplied_units: finalSuppliedUnits,
-              supplied_time: match.data.supplied_time || metWithDate || "",
+              supplied_units: existingSupplied,
+              supplied_time: match.data.supplied_time || "",
               raw_data: mergedRawData,
               updated_at: new Date().toISOString(),
             };

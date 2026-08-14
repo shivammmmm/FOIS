@@ -5,6 +5,10 @@ function normalizeName(name) {
   return String(name || "").trim();
 }
 
+function normalizeCode(code) {
+  return String(code || "").trim().toUpperCase();
+}
+
 // --- STATE MASTER CRUD CONTROLLERS ---
 
 export async function getAllStates(req, res) {

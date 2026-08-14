@@ -78,12 +78,8 @@ export function getSuppliedUnits(record) {
     if (sum > 0) return String(sum);
   }
 
-  // Priority 4: If record is matured (met_with_date present) but supplied_units is 0/absent, use units from matured report
-  if (isMaturedRecord(record)) {
-    const demand = getDemandUnits(record);
-    if (demand !== "-" && demand !== "0") return demand;
-  }
-
+  // A record maturing does not prove it was ever supplied — demand units are a
+  // different fact and must never stand in for a genuinely absent supplied figure.
   return "0";
 }
 

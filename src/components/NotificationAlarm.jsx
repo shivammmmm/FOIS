@@ -30,12 +30,13 @@ function saveSeenIds(userId, idsSet) {
 }
 
 /**
- * Alarm-style notification popup: unlike the bell dropdown (silent, only
- * shown when opened), this stays on screen the moment a NEW notification
- * arrives and does not go away until the user acknowledges it. Only alarms
- * for notifications that arrive after the alarm starts watching — the
- * existing unread backlog at first login is baselined silently so it
- * doesn't dump dozens of popups on the user at once.
+ * Small corner toast for new notifications: unlike the bell dropdown (silent,
+ * only shown when opened), this surfaces the moment a NEW notification
+ * arrives. It is intentionally non-blocking — no backdrop, no centered
+ * modal — so it never interrupts work on the main screen; full details
+ * always live behind the bell icon. Only alarms for notifications that
+ * arrive after it starts watching — the existing unread backlog at first
+ * login is baselined silently so it doesn't dump dozens of toasts at once.
  */
 export default function NotificationAlarm() {
   const { user } = useAuth();
@@ -99,58 +100,63 @@ export default function NotificationAlarm() {
     }
   };
 
+  const acknowledgeAll = async () => {
+    setAcking(true);
+    try {
+      await base44.notifications.markAllRead().catch(() => undefined);
+    } finally {
+      setQueue([]);
+      setAcking(false);
+    }
+  };
+
   const viewAll = () => {
     setQueue((prev) => prev.slice(1));
     navigate("/admin/notifications");
   };
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-xs p-4 animate-fade-in">
-      <div className="w-full max-w-sm rounded-xl border border-primary/30 bg-card shadow-2xl overflow-hidden">
-        <div className="flex items-center justify-between bg-primary/10 px-4 py-3 border-b border-primary/20">
-          <div className="flex items-center gap-2">
-            <span className="relative flex h-3 w-3">
+    <div className="fixed bottom-4 right-4 z-[100] w-72 animate-fade-in pointer-events-none">
+      <div className="pointer-events-auto rounded-lg border border-primary/30 bg-card shadow-lg overflow-hidden">
+        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-border">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="relative flex h-2 w-2 shrink-0">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary/60" />
-              <span className="relative inline-flex h-3 w-3 rounded-full bg-primary" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
             </span>
-            <span className="text-sm font-bold text-foreground">Alert{queue.length > 1 ? ` (1 of ${queue.length})` : ""}</span>
+            <Bell className="h-3.5 w-3.5 shrink-0 text-primary" />
+            <span className="truncate text-xs font-semibold text-foreground" title={current.title || "Notification"}>
+              {current.title || "Notification"}
+            </span>
           </div>
           <button
             type="button"
             onClick={() => setQueue((prev) => prev.slice(1))}
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+            className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
             title="Dismiss (still marked unread)"
           >
-            <X className="h-4 w-4" />
+            <X className="h-3.5 w-3.5" />
           </button>
         </div>
 
-        <div className="p-4 space-y-2">
-          <div className="flex items-start gap-2">
-            <Bell className="h-4 w-4 mt-0.5 text-primary shrink-0" />
-            <div className="text-sm font-semibold text-foreground">{current.title || "Notification"}</div>
+        <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px]">
+          {queue.length > 1 ? (
+            <span className="text-muted-foreground">+{queue.length - 1} more</span>
+          ) : null}
+          <div className="ml-auto flex items-center gap-2">
+            <button type="button" onClick={viewAll} className="font-semibold text-muted-foreground hover:underline">
+              View
+            </button>
+            {queue.length > 1 ? (
+              <button type="button" onClick={acknowledgeAll} disabled={acking} className="font-semibold text-primary hover:underline disabled:opacity-60">
+                {acking ? "..." : "Ack All"}
+              </button>
+            ) : (
+              <button type="button" onClick={acknowledge} disabled={acking} className="font-semibold text-primary hover:underline disabled:opacity-60">
+                {acking ? "..." : "Ack"}
+              </button>
+            )}
           </div>
-          <div className="whitespace-pre-line text-xs leading-5 text-muted-foreground pl-6">
-            {current.message || ""}
-          </div>
-        </div>
-
-        <div className="flex gap-2 border-t border-border p-3">
-          <button
-            type="button"
-            onClick={viewAll}
-            className="flex-1 rounded-lg border border-border px-3 py-2 text-xs font-semibold text-muted-foreground hover:bg-muted"
-          >
-            View All
-          </button>
-          <button
-            type="button"
-            onClick={acknowledge}
-            disabled={acking}
-            className="flex-1 rounded-lg bg-primary px-3 py-2 text-xs font-bold text-primary-foreground hover:bg-primary/90 disabled:opacity-60"
-          >
-            {acking ? "..." : "Acknowledge"}
-          </button>
         </div>
       </div>
     </div>

@@ -1065,21 +1065,61 @@ export async function createRecords(entityName, records) {
 
   if (activeStorage === "postgres") {
     const tableName = ENTITY_TABLES[entityName];
+    // Mirror createRecord()'s promoted-column population (business_key, active_status,
+    // station/commodity enrichment, etc.) for FreightMovement/MaturedIndent — without
+    // this, bulk-inserted rows leave active_status NULL (no column default), which
+    // silently excludes them from every query that filters active_status = 'ACTIVE'
+    // (the main FOIS Reports list, and matching lookups for later Supplied/Matured
+    // uploads on the same demand).
+    const isEnriched = STATION_ENRICHED_ENTITIES.has(entityName);
+    const isIndent = entityName === "MaturedIndent";
+    const dateColumns = isIndent
+      ? ["indent_date", "maturity_date"]
+      : ["arrival_date", "departure_date"];
+    const extraColumns = isEnriched
+      ? [
+          ...STATION_ENRICHMENT_COLUMN_NAMES,
+          ...COMMODITY_ENRICHMENT_COLUMN_NAMES,
+          ...INCREMENTAL_ENRICHMENT_COLUMN_NAMES,
+          ...dateColumns,
+        ]
+      : [];
+    const extraColumnsSql = extraColumns.length ? `, ${extraColumns.join(", ")}` : "";
+    const extraUpdatesSql = extraColumns.map((c) => `${c} = EXCLUDED.${c}`).join(", ");
+    const perRowCols = 3 + extraColumns.length;
+
     const created = [];
     const chunkSize = 500;
     for (let i = 0; i < recordList.length; i += chunkSize) {
       const chunk = recordList.slice(i, i + chunkSize);
       const values = [];
       const placeholders = chunk.map((rec, idx) => {
-        const offset = idx * 3;
-        values.push(String(rec.id), rec, rec.created_date || nowIso());
-        return `($${offset + 1}, $${offset + 2}, $${offset + 3})`;
+        const offset = idx * perRowCols;
+        const id = rec.id != null ? String(rec.id) : generateId();
+        values.push(id, rec, rec.created_date || nowIso());
+        if (isEnriched) {
+          const dateValues = dateColumns.map((colName) =>
+            rec?.[colName] == null || rec?.[colName] === "" ? null : String(rec[colName])
+          );
+          values.push(
+            ...stationColumnValues(rec),
+            ...commodityColumnValues(rec),
+            ...incrementalColumnValues(rec),
+            ...dateValues
+          );
+        }
+        const placeholderNums = Array.from({ length: perRowCols }, (_, k) => `$${offset + k + 1}`);
+        return `(${placeholderNums.join(", ")})`;
       });
 
+      const conflictSql = extraColumns.length
+        ? `ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, ${extraUpdatesSql}, updated_date = NOW()`
+        : `ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_date = NOW()`;
+
       await pool.query(
-        `INSERT INTO ${tableName} (id, data, created_date)
+        `INSERT INTO ${tableName} (id, data, created_date${extraColumnsSql})
          VALUES ${placeholders.join(",")}
-         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_date = NOW()`,
+         ${conflictSql}`,
         values
       );
       created.push(...chunk);

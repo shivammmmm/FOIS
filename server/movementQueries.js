@@ -79,7 +79,7 @@ function queryContext(input = {}) {
     rake: fieldSql.rake, company: fieldSql.company, cnsr: fieldSql.cnsr, cnsg: fieldSql.cnsg,
   };
   const params = [direction];
-  const where = ["data->>'movement_type' = $1", "active_status = 'ACTIVE'"];
+  const where = ["data->>'movement_type' = $1", "(active_status = 'ACTIVE' OR active_status IS NULL)"];
   for (const key of Object.keys(expressions)) {
     const values = Array.isArray(input[key]) ? input[key].filter(Boolean) : [];
     if (!values.length) continue;
@@ -206,7 +206,7 @@ export async function pagedFoisReports(input = {}) {
   const limit = Math.min(Math.max(Number(input.limit) || 25, 1), 100);
   const params = [];
   const where = [
-    "active_status = 'ACTIVE'",
+    "(active_status = 'ACTIVE' OR active_status IS NULL)",
     "(data->>'odr_number' IS NULL OR data->>'odr_number' NOT ILIKE '%TOTAL%') AND (data->>'division' IS NULL OR data->>'division' !~ '^[0-9]+$') AND (station_from IS NULL OR station_from !~ '^[0-9]+(\\.[0-9]+)?$') AND (data->>'departure_date' IS NULL OR data->>'departure_date' NOT LIKE '%1984%')"
   ];
   addArrayFilter(where, params, reportExpressions.zone, input.zone);
@@ -252,7 +252,7 @@ export async function pagedFoisReports(input = {}) {
   const metadata = await cachedJson(metadataKey, 120, async () => {
     const count = await pool.query(`SELECT COUNT(*)::int AS total FROM freight_movements ${REPORT_ZONE_JOIN}${whereSql}`, params);
     const facets = await Promise.all(Object.entries(reportExpressions).map(([key, expression]) =>
-      pool.query(`SELECT DISTINCT ${expression} AS value FROM freight_movements ${key === "zone" ? REPORT_ZONE_JOIN : ""} WHERE active_status = 'ACTIVE' AND ${expression} IS NOT NULL AND ${expression} <> '' ORDER BY value LIMIT 5000`)
+      pool.query(`SELECT DISTINCT ${expression} AS value FROM freight_movements ${key === "zone" ? REPORT_ZONE_JOIN : ""} WHERE (active_status = 'ACTIVE' OR active_status IS NULL) AND ${expression} IS NOT NULL AND ${expression} <> '' ORDER BY value LIMIT 5000`)
     ));
     const keys = Object.keys(reportExpressions);
     return {
