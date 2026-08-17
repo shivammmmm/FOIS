@@ -1379,14 +1379,8 @@ app.post(
       const priorUploads = await pool.query(
         `SELECT data FROM upload_logs
          WHERE data->>'file_hash' = $1
-            OR (
-              data->>'file_type' = $2
-              AND data->>'zone' = $3
-              AND (data->>'records_valid')::int > 0
-              AND created_date > NOW() - INTERVAL '15 minutes'
-            )
          ORDER BY created_date DESC LIMIT 1`,
-        [fileHash, fileType, selectedZone]
+        [fileHash]
       );
       if (priorUploads.rows.length > 0) {
         const prior = priorUploads.rows[0].data || {};
@@ -1676,8 +1670,15 @@ app.post(
           insertedRecords = toInsert.length;
         }
 
-        // Fire notifications in background
-        Promise.all(notifsToPush.map((n) => createNotification(n).catch(() => undefined))).catch(() => undefined);
+        // Fire notifications in background, sequentially — multiple notifications for the
+        // same record (e.g. New Rack Indent + Rack Supplied from one already-supplied upload
+        // row) must land in logical order; firing them concurrently races their created_date
+        // and can make Supplied appear before Indent in the feed.
+        (async () => {
+          for (const n of notifsToPush) {
+            await createNotification(n).catch(() => undefined);
+          }
+        })();
 
         await invalidateCachePrefix("movement:");
 
@@ -1785,8 +1786,12 @@ app.post(
           }
         }
 
-        // Fire notifications in background
-        Promise.all(maturedNotifs.map((n) => createNotification(n).catch(() => undefined))).catch(() => undefined);
+        // Fire notifications in background, sequentially — see the ODR branch above for why.
+        (async () => {
+          for (const n of maturedNotifs) {
+            await createNotification(n).catch(() => undefined);
+          }
+        })();
 
         // Check existing MaturedIndents in DB to prevent duplicate rows in matured_indents table
         const existingIndentsInDb = keysToMatch.length

@@ -121,6 +121,10 @@ export function aggregateMultiLineIndents(parsedRecords, fileType = "ODR") {
       raw['SUPPLIED UNITS'],
       raw['supplied_units'],
     ], { requirePositive: true });
+    // supplied_time must be lifted to the parent the same way supplied_units is —
+    // otherwise a single-row demand (no second line item to trigger the
+    // existing.supplied_time backfill below) silently loses its supply date.
+    const st = record.supplied_time || raw['SUPPLIED TIME'] || raw['SUPPLIED DATE'] || raw['supplied_time'] || "";
 
     const srNo = String(raw['srNo'] || raw['SR NO'] || raw['sr_no'] || "").trim();
     const dedupKey = srNo || `${record.station_to || record.destination || ""}|${iu}`;
@@ -132,7 +136,7 @@ export function aggregateMultiLineIndents(parsedRecords, fileType = "ODR") {
       rake_cmdt: record.rake_cmdt || record.rake_commodity_code || "",
       indented_units: iu,
       supplied_units: su,
-      supplied_time: record.supplied_time || raw['SUPPLIED TIME'] || raw['supplied_time'] || "",
+      supplied_time: st,
       cnsr: record.company || record.cnsr || "",
       cnsg: record.cnsg || "",
       sr_no: srNo,
@@ -145,6 +149,7 @@ export function aggregateMultiLineIndents(parsedRecords, fileType = "ODR") {
         business_key: key,
         indented_units: iu,
         supplied_units: su,
+        supplied_time: st,
         line_items: new Map([[dedupKey, lineItem]]),
       });
     } else {

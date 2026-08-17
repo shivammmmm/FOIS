@@ -6,6 +6,7 @@ import { useAuth } from "@/lib/AuthContext";
 
 const POLL_MS = 25000;
 const SEEN_ID_CAP = 500;
+const AUTO_DISMISS_MS = 8000;
 
 function seenKey(userId) {
   return `fois_alarm_seen_${userId}`;
@@ -37,6 +38,8 @@ function saveSeenIds(userId, idsSet) {
  * always live behind the bell icon. Only alarms for notifications that
  * arrive after it starts watching — the existing unread backlog at first
  * login is baselined silently so it doesn't dump dozens of toasts at once.
+ * Each toast auto-advances after AUTO_DISMISS_MS so a run of notifications
+ * never has to be closed one by one, and "Clear All" is always visible.
  */
 export default function NotificationAlarm() {
   const { user } = useAuth();
@@ -85,6 +88,14 @@ export default function NotificationAlarm() {
       clearInterval(interval);
     };
   }, [user?.id]);
+
+  useEffect(() => {
+    if (queue.length === 0) return undefined;
+    const timer = setTimeout(() => {
+      setQueue((prev) => prev.slice(1));
+    }, AUTO_DISMISS_MS);
+    return () => clearTimeout(timer);
+  }, [queue]);
 
   if (!user?.id || queue.length === 0) return null;
 
@@ -147,15 +158,12 @@ export default function NotificationAlarm() {
             <button type="button" onClick={viewAll} className="font-semibold text-muted-foreground hover:underline">
               View
             </button>
-            {queue.length > 1 ? (
-              <button type="button" onClick={acknowledgeAll} disabled={acking} className="font-semibold text-primary hover:underline disabled:opacity-60">
-                {acking ? "..." : "Ack All"}
-              </button>
-            ) : (
-              <button type="button" onClick={acknowledge} disabled={acking} className="font-semibold text-primary hover:underline disabled:opacity-60">
-                {acking ? "..." : "Ack"}
-              </button>
-            )}
+            <button type="button" onClick={acknowledge} disabled={acking} className="font-semibold text-muted-foreground hover:underline disabled:opacity-60">
+              {acking ? "..." : "Skip"}
+            </button>
+            <button type="button" onClick={acknowledgeAll} disabled={acking} className="font-semibold text-primary hover:underline disabled:opacity-60">
+              {acking ? "..." : "Clear All"}
+            </button>
           </div>
         </div>
       </div>
